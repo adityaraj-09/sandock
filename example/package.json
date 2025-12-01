@@ -1,0 +1,14 @@
+{
+  "name": "@insien/example",
+  "version": "1.0.0",
+  "description": "Example usage of Insien Sandbox SDK",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": ["sandbox", "example"],
+  "author": "",
+  "license": "MIT"
+}
+

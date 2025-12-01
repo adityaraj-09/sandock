@@ -1,0 +1,18 @@
+{
+  "name": "@insien/sandbox",
+  "version": "1.0.0",
+  "description": "JavaScript SDK for Insien Sandbox",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["sandbox", "sdk"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.14.2",
+    "uuid": "^9.0.1"
+  }
+}
+

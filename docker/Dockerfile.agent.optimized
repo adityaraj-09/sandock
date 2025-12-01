@@ -1,0 +1,54 @@
+# Multi-stage build for optimized sandbox agent
+FROM node:20-alpine as builder
+
+# Install build dependencies
+RUN apk add --no-cache python3 make g++
+
+WORKDIR /app
+
+# Copy package files
+COPY sandbox-agent/package*.json ./
+RUN npm ci --only=production && npm cache clean --force
+
+# Production stage
+FROM node:20-alpine as production
+
+# Install runtime dependencies and create user
+RUN apk add --no-cache \
+    dumb-init \
+    tini \
+    && addgroup -g 1001 -S sandbox \
+    && adduser -S sandbox -u 1001 -G sandbox
+
+# Set up directories
+WORKDIR /app
+RUN mkdir -p /workspace /tmp/sandbox && \
+    chown -R sandbox:sandbox /app /workspace /tmp/sandbox
+
+# Copy application files
+COPY --from=builder /app/node_modules ./node_modules
+COPY sandbox-agent/src ./src
+COPY sandbox-agent/package.json ./
+
+# Remove unnecessary files to reduce image size
+RUN rm -rf /app/node_modules/.cache \
+    && rm -rf /tmp/* \
+    && rm -rf /var/cache/apk/*
+
+# Switch to non-root user
+USER sandbox
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD node -e "process.exit(0)" || exit 1
+
+# Use tini for proper signal handling
+ENTRYPOINT ["tini", "--"]
+CMD ["node", "src/index.js"]
+
+# Labels
+LABEL maintainer="insien" \
+      version="optimized" \
+      description="Optimized sandbox agent container" \
+      security.non-root="true" \
+      security.readonly-rootfs="true"

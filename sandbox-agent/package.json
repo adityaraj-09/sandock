@@ -1,0 +1,17 @@
+{
+  "name": "@insien/sandbox-agent",
+  "version": "1.0.0",
+  "description": "Agent that runs inside sandbox containers",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "keywords": ["sandbox", "agent"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.14.2"
+  }
+}
+

@@ -1,0 +1,321 @@
+import express from 'express';
+import { WebSocketServer } from 'ws';
+import { v4 as uuidv4 } from 'uuid';
+import jwt from 'jsonwebtoken';
+import Docker from 'dockerode';
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+// Services and middleware
+import pool from './db/index.js';
+import { redisClient, connectRedis, setAgentConnection, getAgentConnection, deleteAgentConnection, setSandboxMetadata, getSandboxMetadata, deleteSandboxMetadata, setPortMapping, getPortMapping, deletePortMapping, cleanupSandbox } from './services/redis.js';
+import { authenticateApiKey } from './middleware/apiKeyAuth.js';
+import { requireAuth } from './services/auth.js';
+import { apiLimiter, strictLimiter, securityHeaders, corsOptions } from './middleware/security.js';
+import apiKeysRouter from './routes/apiKeys.js';
+import usersRouter from './routes/users.js';
+import createSandboxesRouter from './routes/sandboxes.js';
+import { logger } from './utils/logger.js';
+import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { ResourceManager } from './services/resourceManager.js';
+import { ContainerOptimizer } from './services/containerOptimizer.js';
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const WS_PORT = process.env.WS_PORT || 3001;
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const AGENT_IMAGE = process.env.AGENT_IMAGE || 'sandbox-agent:latest';
+const ORCHESTRATOR_HOST = process.env.ORCHESTRATOR_HOST || 'host.docker.internal';
+
+// Security middleware
+app.use(securityHeaders);
+app.use(corsOptions);
+app.use(express.json({ limit: '10mb' }));
+app.use(apiLimiter);
+
+// Docker client
+const docker = new Docker();
+
+// Initialize resource management services
+const resourceManager = new ResourceManager(docker, pool);
+const containerOptimizer = new ContainerOptimizer(docker);
+
+// Store active WebSocket connections (in-memory for real-time)
+const agentConnections = new Map();
+const clientConnections = new Map();
+const pendingRequests = new Map();
+
+let nextAvailablePort = 30000;
+
+// Routes
+
+// Health check
+app.get('/health', async (req, res) => {
+  try {
+    // Check PostgreSQL
+    await pool.query('SELECT 1');
+    const postgresHealthy = true;
+    
+    // Check Redis
+    const redisHealthy = redisClient.isReady;
+    if (redisHealthy) {
+      await redisClient.ping();
+    }
+    
+    res.json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      services: {
+        postgres: postgresHealthy,
+        redis: redisHealthy,
+        docker: docker.listContainers ? true : false
+      }
+    });
+  } catch (error) {
+    logger.error('Health check failed:', error);
+    res.status(503).json({
+      status: 'degraded',
+      error: error.message
+    });
+  }
+});
+
+// API Key management routes (requires Clerk auth)
+app.use('/api/keys', apiKeysRouter);
+
+// User management routes (requires Clerk auth)
+app.use('/api/users', usersRouter);
+
+// Sandbox management routes (requires API key)
+const sandboxesRouter = createSandboxesRouter({
+  docker,
+  agentConnections,
+  pool,
+  JWT_SECRET,
+  AGENT_IMAGE,
+  ORCHESTRATOR_HOST,
+  WS_PORT,
+  getSandboxMetadata,
+  setSandboxMetadata,
+  deleteAgentConnection,
+  deletePortMapping,
+  cleanupSandbox,
+  getPortMapping,
+  setPortMapping
+});
+app.use('/sandbox', sandboxesRouter);
+
+// 404 handler (must be after all routes)
+app.use(notFoundHandler);
+
+// Error handler (must be last)
+app.use(errorHandler);
+
+// WebSocket server (similar to before but with Redis)
+const wss = new WebSocketServer({ port: WS_PORT });
+
+wss.on('connection', (ws, req) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const pathParts = url.pathname.split('/');
+  
+  if (pathParts[1] === 'agent' && pathParts[2]) {
+    // Agent connection
+    const sandboxId = pathParts[2];
+    const token = url.searchParams.get('token');
+    
+    // Verify JWT token
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      if (decoded.sandboxId !== sandboxId || decoded.type !== 'agent') {
+        throw new Error('Invalid token');
+      }
+    } catch (error) {
+      ws.close(1008, 'Invalid authentication token');
+      return;
+    }
+
+    agentConnections.set(sandboxId, ws);
+    setAgentConnection(sandboxId, { connectedAt: new Date().toISOString() }).catch(err => {
+      logger.error('Error storing agent connection in Redis:', err);
+    });
+
+    ws.on('message', (message) => {
+      handleAgentMessage(sandboxId, message);
+    });
+
+    ws.on('close', () => {
+      agentConnections.delete(sandboxId);
+      deleteAgentConnection(sandboxId).catch(err => {
+        logger.error('Error deleting agent connection from Redis:', err);
+      });
+      logger.info(`Agent disconnected: ${sandboxId}`);
+    });
+
+    ws.on('error', (error) => {
+      logger.error(`WebSocket error for agent ${sandboxId}:`, error);
+    });
+  } else if (pathParts[1] === 'client' && pathParts[2]) {
+    // Client connection
+    const sandboxId = pathParts[2];
+    
+    if (!clientConnections.has(sandboxId)) {
+      clientConnections.set(sandboxId, new Set());
+    }
+    clientConnections.get(sandboxId).add(ws);
+
+    ws.on('message', async (message) => {
+      try {
+        const data = JSON.parse(message.toString());
+        const agentWs = agentConnections.get(sandboxId);
+        
+        if (!agentWs || agentWs.readyState !== 1) {
+          ws.send(JSON.stringify({
+            id: data.id,
+            type: 'error',
+            error: 'Agent not connected'
+          }));
+          return;
+        }
+
+        agentWs.send(JSON.stringify(data));
+        
+        if (!pendingRequests.has(sandboxId)) {
+          pendingRequests.set(sandboxId, new Map());
+        }
+        pendingRequests.get(sandboxId).set(data.id, ws);
+      } catch (error) {
+        logger.error('Error handling client message:', error);
+        ws.send(JSON.stringify({
+          id: data?.id,
+          type: 'error',
+          error: error.message
+        }));
+      }
+    });
+
+    ws.on('close', () => {
+      if (clientConnections.has(sandboxId)) {
+        clientConnections.get(sandboxId).delete(ws);
+      }
+    });
+
+    logger.info(`Client connected: ${sandboxId}`);
+    
+    ws.on('error', (error) => {
+      logger.error(`WebSocket error for client ${sandboxId}:`, error);
+    });
+  }
+});
+
+function handleAgentMessage(sandboxId, message) {
+  try {
+    const data = JSON.parse(message.toString());
+    const requests = pendingRequests.get(sandboxId);
+    
+    if (requests && requests.has(data.id)) {
+      const clientWs = requests.get(data.id);
+      if (clientWs && clientWs.readyState === 1) {
+        clientWs.send(message.toString());
+        requests.delete(data.id);
+      }
+    }
+  } catch (error) {
+    logger.error('Error routing agent message:', error);
+  }
+}
+
+// Start HTTP server
+async function startServer() {
+  try {
+    // Connect to Redis
+    await connectRedis();
+    logger.info('Redis connected');
+
+    // Test database connection
+    await pool.query('SELECT 1');
+    logger.info('PostgreSQL connected');
+
+    // Pre-pull and optimize container images
+    logger.info('Optimizing container images...');
+    await containerOptimizer.prePullImages([AGENT_IMAGE]);
+    
+    // Start resource monitoring
+    resourceManager.startMonitoring();
+    containerOptimizer.startOptimizationTasks();
+    
+    logger.info('Resource management services started');
+
+    // Start HTTP server
+    app.listen(PORT, () => {
+      logger.info(`Orchestrator API listening on http://localhost:${PORT}`);
+      logger.info(`WebSocket server listening on ws://localhost:${WS_PORT}`);
+      logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
+      logger.info('🚀 Orchestrator API ready with enhanced resource management');
+    });
+  } catch (error) {
+    logger.error('Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+startServer();
+
+// Graceful shutdown
+async function gracefulShutdown(signal) {
+  logger.info(`${signal} received, shutting down gracefully...`);
+  
+  try {
+    // Close WebSocket connections
+    agentConnections.forEach((ws) => {
+      try {
+        ws.close();
+      } catch (e) {
+        logger.warn('Error closing agent connection:', e);
+      }
+    });
+    clientConnections.forEach((connections) => {
+      connections.forEach((ws) => {
+        try {
+          ws.close();
+        } catch (e) {
+          logger.warn('Error closing client connection:', e);
+        }
+      });
+    });
+    
+    // Close Redis connection
+    if (redisClient.isReady) {
+      await redisClient.quit();
+      logger.info('Redis connection closed');
+    }
+    
+    // Close database connection
+    await pool.end();
+    logger.info('PostgreSQL connection closed');
+    
+    process.exit(0);
+  } catch (error) {
+    logger.error('Error during shutdown:', error);
+    process.exit(1);
+  }
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Handle uncaught errors
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception:', error);
+  gracefulShutdown('UNCAUGHT_EXCEPTION');
+});
+

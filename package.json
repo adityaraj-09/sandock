@@ -1,0 +1,14 @@
+{
+  "name": "@insien/sandbox",
+  "version": "1.0.0",
+  "description": "Complete code-sandbox backend and SDK system",
+  "private": true,
+  "scripts": {
+    "setup": "./setup.sh",
+    "build": "cd docker && ./build.sh"
+  },
+  "keywords": ["sandbox", "docker", "code-execution"],
+  "author": "",
+  "license": "MIT"
+}
+
