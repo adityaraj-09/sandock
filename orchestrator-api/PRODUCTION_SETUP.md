@@ -1,6 +1,6 @@
 # Production Setup Guide
 
-This guide covers setting up the Insien Sandbox orchestrator API for production with Clerk authentication, PostgreSQL, and Redis.
+This guide covers setting up the Insien Sandbox orchestrator API for production with JWT-based authentication, PostgreSQL, and Redis.
 
 ## Architecture
 
@@ -16,7 +16,6 @@ All in one service for simplicity, but can be split if needed for scaling.
 1. **PostgreSQL** (v14+)
 2. **Redis** (v6+)
 3. **Docker** (for running sandbox containers)
-4. **Clerk Account** (for authentication)
 
 ## Setup Steps
 
@@ -50,8 +49,7 @@ cp .env.production.example .env
 Key variables:
 - `DATABASE_URL` - PostgreSQL connection string
 - `REDIS_URL` - Redis connection string
-- `CLERK_SECRET_KEY` - From Clerk dashboard
-- `JWT_SECRET` - Generate with `openssl rand -base64 32`
+- `JWT_SECRET` - Generate with `openssl rand -base64 32` (required for JWT authentication)
 
 ### 4. Start Services
 
@@ -66,14 +64,50 @@ npm start
 
 ## API Endpoints
 
-### Authentication Required (Clerk Bearer Token)
+### Authentication Endpoints (Public)
+
+#### POST /api/auth/register
+Register a new user account.
+
+**Body:**
+```json
+{
+  "email": "user@example.com",
+  "password": "securepassword123",
+  "firstName": "John",
+  "lastName": "Doe",
+  "username": "johndoe"
+}
+```
+
+#### POST /api/auth/login
+Login with email and password.
+
+**Body:**
+```json
+{
+  "email": "user@example.com",
+  "password": "securepassword123"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "user": { ... },
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+### Protected Endpoints (JWT Bearer Token Required)
 
 #### POST /api/keys
 Create a new API key.
 
 **Headers:**
 ```
-Authorization: Bearer <clerk_session_token>
+Authorization: Bearer <jwt_token>
 ```
 
 **Body:**
@@ -129,14 +163,15 @@ Get all exposed ports.
 
 ## Security Features
 
-1. **Clerk Authentication** - Secure user authentication
-2. **API Key Management** - Users create and manage their own API keys
-3. **Rate Limiting** - Prevents abuse
-4. **Helmet** - Security headers
-5. **CORS** - Configurable origins
-6. **Input Validation** - Zod schemas
-7. **Database-backed** - All sandboxes tracked in PostgreSQL
-8. **Redis** - Fast connection state management
+1. **JWT Authentication** - Secure email/password authentication with JWT tokens
+2. **Password Hashing** - Bcrypt with salt rounds for secure password storage
+3. **API Key Management** - Users create and manage their own API keys
+4. **Rate Limiting** - Prevents abuse
+5. **Helmet** - Security headers
+6. **CORS** - Configurable origins
+7. **Input Validation** - Zod schemas
+8. **Database-backed** - All sandboxes tracked in PostgreSQL
+9. **Redis** - Fast connection state management
 
 ## Production Deployment
 
@@ -167,10 +202,12 @@ All sensitive values should be set via environment variables or secrets manageme
 
 ## Next Steps
 
-1. Set up Clerk account and get API key
-2. Configure PostgreSQL and Redis
-3. Run migrations
+1. Configure PostgreSQL and Redis
+2. Run migrations (including JWT migration)
+3. Set up JWT_SECRET environment variable
 4. Start the service
-5. Test API key creation
+5. Register a user account
+6. Test authentication flow
+7. Create API keys
 6. Test sandbox creation
 

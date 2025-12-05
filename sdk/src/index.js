@@ -4,7 +4,6 @@ import { v4 as uuidv4 } from 'uuid';
 export class Sandbox {
   constructor(options = {}) {
     this.apiKey = options.apiKey || process.env.INSIEN_API_KEY;
-    // Default to localhost, but allow override via env vars for production
     this.orchestratorUrl = options.orchestratorUrl || process.env.INSIEN_API_URL || 'http://localhost:3000';
     this.wsUrl = options.wsUrl || process.env.INSIEN_WS_URL || 'ws://localhost:3001';
     this.sandboxId = null;
@@ -16,7 +15,6 @@ export class Sandbox {
 
   async create() {
     if (this.creating) {
-      // Wait for existing creation to complete
       while (this.creating) {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
@@ -24,7 +22,7 @@ export class Sandbox {
     }
 
     if (this.connected) {
-      return; // Already created and connected
+      return;
     }
 
     if (!this.apiKey) {
@@ -38,21 +36,19 @@ export class Sandbox {
         headers: {
           'Content-Type': 'application/json',
           'X-API-Key': this.apiKey
-        }
+        },
+        body: JSON.stringify({ tier: 'free' })
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json().catch(() => ({ error: response.statusText }));
         throw new Error(error.error || `Failed to create sandbox: ${response.statusText}`);
       }
 
       const data = await response.json();
       this.sandboxId = data.sandboxId;
       
-      // Wait a bit for container to start and agent to connect
-      await this.waitForAgent(30000); // 30 second timeout
-      
-      // Connect WebSocket to orchestrator
+      await this.waitForAgent(30000);
       await this.connectWebSocket();
       
       this.creating = false;
@@ -69,8 +65,10 @@ export class Sandbox {
   async waitForAgent(timeout = 30000) {
     const startTime = Date.now();
     const checkInterval = 500;
+    let attempts = 0;
 
     while (Date.now() - startTime < timeout) {
+      attempts++;
       try {
         const response = await fetch(`${this.orchestratorUrl}/sandbox/${this.sandboxId}/status`, {
           headers: {
@@ -91,7 +89,7 @@ export class Sandbox {
       await new Promise(resolve => setTimeout(resolve, checkInterval));
     }
 
-    throw new Error('Timeout waiting for agent to connect');
+    throw new Error(`Timeout waiting for agent to connect after ${attempts} attempts (${timeout}ms)`);
   }
 
   connectWebSocket() {
@@ -163,7 +161,7 @@ export class Sandbox {
     }
   }
 
-  async sendRPC(type, payload) {
+  async sendRPC(type, payload, timeout = 30000) {
     await this.ensureConnected();
 
     const id = uuidv4();
@@ -183,13 +181,13 @@ export class Sandbox {
         reject(error);
       }
 
-      // Timeout after 30 seconds
+      // Configurable timeout (default 30 seconds, longer for commands like npm install)
       setTimeout(() => {
         if (this.pendingRequests.has(id)) {
           this.pendingRequests.delete(id);
-          reject(new Error('RPC request timeout'));
+          reject(new Error(`RPC request timeout after ${timeout}ms`));
         }
-      }, 30000);
+      }, timeout);
     });
   }
 
@@ -206,7 +204,9 @@ export class Sandbox {
     }
 
     const background = options.background || false;
-    const response = await this.sendRPC('exec', { cmd, args, background });
+    const timeout = options.timeout || (cmd === 'npm' && args[0] === 'install' ? 300000 : 30000);
+    
+    const response = await this.sendRPC('exec', { cmd, args, background }, timeout);
     
     if (response.type === 'execResponse') {
       return {

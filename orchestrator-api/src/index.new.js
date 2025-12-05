@@ -15,6 +15,7 @@ import { requireAuth } from './services/auth.js';
 import { apiLimiter, strictLimiter, securityHeaders, corsOptions } from './middleware/security.js';
 import apiKeysRouter from './routes/apiKeys.js';
 import usersRouter from './routes/users.js';
+import authRouter from './routes/auth.js';
 import createSandboxesRouter from './routes/sandboxes.js';
 import { logger } from './utils/logger.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
@@ -33,11 +34,9 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-producti
 const AGENT_IMAGE = process.env.AGENT_IMAGE || 'sandbox-agent:latest';
 const ORCHESTRATOR_HOST = process.env.ORCHESTRATOR_HOST || 'host.docker.internal';
 
-// Security middleware
 app.use(securityHeaders);
 app.use(corsOptions);
 app.use(express.json({ limit: '10mb' }));
-app.use(apiLimiter);
 
 // Docker client
 const docker = new Docker();
@@ -86,13 +85,10 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// API Key management routes (requires Clerk auth)
+app.use('/api/auth', authRouter);
 app.use('/api/keys', apiKeysRouter);
-
-// User management routes (requires Clerk auth)
 app.use('/api/users', usersRouter);
 
-// Sandbox management routes (requires API key)
 const sandboxesRouter = createSandboxesRouter({
   docker,
   agentConnections,
@@ -232,31 +228,51 @@ function handleAgentMessage(sandboxId, message) {
 
 // Start HTTP server
 async function startServer() {
+  console.log('\n=== STARTING SERVER ===');
+  console.log(`Port: ${PORT}`);
+  console.log(`WebSocket Port: ${WS_PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`LOG_LEVEL: ${process.env.LOG_LEVEL || 'DEBUG'}`);
+  
   try {
     // Connect to Redis
+    console.log('Connecting to Redis...');
     await connectRedis();
     logger.info('Redis connected');
+    console.log('✓ Redis connected');
 
     // Test database connection
+    console.log('Testing database connection...');
     await pool.query('SELECT 1');
     logger.info('PostgreSQL connected');
+    console.log('✓ PostgreSQL connected');
 
     // Pre-pull and optimize container images
+    console.log('Optimizing container images...');
     logger.info('Optimizing container images...');
     await containerOptimizer.prePullImages([AGENT_IMAGE]);
+    console.log('✓ Images optimized');
     
     // Start resource monitoring
+    console.log('Starting resource management services...');
     resourceManager.startMonitoring();
     containerOptimizer.startOptimizationTasks();
     
     logger.info('Resource management services started');
+    console.log('✓ Resource management services started');
 
     // Start HTTP server
+    console.log(`\n=== SERVER STARTING ===`);
     app.listen(PORT, () => {
       logger.info(`Orchestrator API listening on http://localhost:${PORT}`);
       logger.info(`WebSocket server listening on ws://localhost:${WS_PORT}`);
       logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
       logger.info('🚀 Orchestrator API ready with enhanced resource management');
+      
+      console.log(`\n✓ Orchestrator API listening on http://localhost:${PORT}`);
+      console.log(`✓ WebSocket server listening on ws://localhost:${WS_PORT}`);
+      console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log('🚀 Orchestrator API ready with enhanced resource management\n');
     });
   } catch (error) {
     logger.error('Failed to start server:', error);

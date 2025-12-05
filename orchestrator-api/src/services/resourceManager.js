@@ -1,5 +1,5 @@
 import { logger } from '../utils/logger.js';
-import { RESOURCE_LIMITS, getResourceLimitsForTier } from '../config/limits.js';
+import { RESOURCE_LIMITS, getResourceLimitsForTier, getTierLimits } from '../config/limits.js';
 import { getSandboxMetadata, setSandboxMetadata } from './redis.js';
 
 export class ResourceManager {
@@ -71,41 +71,24 @@ export class ResourceManager {
   // Get optimized container configuration
   getContainerConfig(sandboxId, agentToken, userTier = 'free') {
     const tierLimits = getResourceLimitsForTier(userTier);
+    const tierInfo = getTierLimits(userTier); // Get tier info for maxMemoryMB
     
     const hostConfig = {
       NetworkMode: 'bridge',
-      AutoRemove: true,
-      
-      // Memory limits
-      Memory: tierLimits.maxMemoryMB * 1024 * 1024,
-      MemorySwap: tierLimits.maxMemoryMB * 1024 * 1024, // No swap
-      MemoryReservation: Math.floor(tierLimits.maxMemoryMB * 0.5) * 1024 * 1024, // 50% reserved
-      
-      // CPU limits
-      CpuShares: tierLimits.maxCpuShares,
+      AutoRemove: false,
+      Memory: tierLimits.Memory,
+      MemorySwap: tierLimits.MemorySwap,
+      MemoryReservation: Math.floor(tierLimits.Memory * 0.5),
+      CpuShares: tierLimits.CpuShares,
       CpuPeriod: RESOURCE_LIMITS.CONTAINER.CPU_PERIOD,
-      CpuQuota: Math.floor(RESOURCE_LIMITS.CONTAINER.CPU_QUOTA * (tierLimits.maxCpuShares / 1024)),
-      
-      // Security
+      CpuQuota: Math.floor(RESOURCE_LIMITS.CONTAINER.CPU_QUOTA * (tierLimits.CpuShares / 1024)),
       SecurityOpt: RESOURCE_LIMITS.CONTAINER.SECURITY_OPT,
-      ReadonlyRootfs: RESOURCE_LIMITS.CONTAINER.READ_ONLY_ROOT_FS,
-      
-      // Resource limits
+      ReadonlyRootfs: false,
       Ulimits: RESOURCE_LIMITS.CONTAINER.ULIMITS,
-      
-      // Tmpfs for writable directories
       Tmpfs: RESOURCE_LIMITS.CONTAINER.TMPFS,
-      
-      // Prevent privilege escalation
       Privileged: false,
-      
-      // Limit PIDs
       PidsLimit: 100,
-      
-      // OOM kill disable (let container handle gracefully)
       OomKillDisable: false,
-      
-      // Restart policy
       RestartPolicy: {
         Name: 'no'
       }
@@ -120,29 +103,21 @@ export class ResourceManager {
       name: `sandbox-${sandboxId}`,
       HostConfig: hostConfig,
       
-      // Container-level config
-      User: 'sandbox:sandbox', // Run as non-root user
-      WorkingDir: '/workspace',
+      WorkingDir: '/app',
       
-      // Environment with limits info
       Env: [
         `ORCHESTRATOR_URL=ws://${process.env.ORCHESTRATOR_HOST}:${process.env.WS_PORT}`,
         `AGENT_TOKEN=${agentToken}`,
         `SANDBOX_ID=${sandboxId}`,
-        `MEMORY_LIMIT_MB=${tierLimits.maxMemoryMB}`,
-        `CPU_SHARES=${tierLimits.maxCpuShares}`,
+        `MEMORY_LIMIT_MB=${tierInfo.maxMemoryMB}`,
+        `CPU_SHARES=${tierInfo.maxCpuShares}`,
         `SANDBOX_TIER=${userTier}`
       ],
       
-      // Networking
       NetworkDisabled: false,
-      
-      // TTY and stdin
       Tty: false,
       OpenStdin: true,
       StdinOnce: false,
-      
-      // Labels for identification and cleanup
       Labels: {
         'insien.sandbox.id': sandboxId,
         'insien.sandbox.tier': userTier,

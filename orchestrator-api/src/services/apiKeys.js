@@ -107,7 +107,7 @@ export async function validateApiKey(apiKey) {
   try {
     // Get all active API keys (not revoked, not expired)
     const result = await client.query(
-      `SELECT ak.id, ak.user_id, ak.key_hash, ak.key_prefix, u.clerk_user_id, u.email
+      `SELECT ak.id, ak.user_id, ak.key_hash, ak.key_prefix, u.email
        FROM api_keys ak
        JOIN users u ON ak.user_id = u.id
        WHERE ak.revoked_at IS NULL
@@ -129,7 +129,6 @@ export async function validateApiKey(apiKey) {
         return {
           userId: row.user_id,
           apiKeyId: row.id,
-          clerkUserId: row.clerk_user_id,
           email: row.email
         };
       }

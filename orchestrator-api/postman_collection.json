@@ -1,0 +1,716 @@
+{
+	"info": {
+		"_postman_id": "orchestrator-api-collection",
+		"name": "Orchestrator API",
+		"description": "Complete API collection for the Insien Sandbox Orchestrator API with JWT authentication",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Authentication",
+			"item": [
+				{
+					"name": "Register User",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"securepassword123\",\n  \"firstName\": \"John\",\n  \"lastName\": \"Doe\",\n  \"username\": \"johndoe\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/auth/register",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"register"
+							]
+						},
+						"description": "Register a new user account. Returns JWT token."
+					},
+					"response": []
+				},
+				{
+					"name": "Login",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    if (jsonData.token) {",
+									"        pm.environment.set(\"jwt_token\", jsonData.token);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"securepassword123\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/auth/login",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"login"
+							]
+						},
+						"description": "Login with email and password. Automatically saves JWT token to environment."
+					},
+					"response": []
+				}
+			],
+			"description": "Public authentication endpoints"
+		},
+		{
+			"name": "Users",
+			"item": [
+				{
+					"name": "Get Current User Profile",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{jwt_token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/users/me",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"users",
+								"me"
+							]
+						},
+						"description": "Get the authenticated user's profile information"
+					},
+					"response": []
+				},
+				{
+					"name": "Update User Profile",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{jwt_token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Smith\",\n  \"username\": \"janesmith\",\n  \"phoneNumber\": \"+1234567890\",\n  \"metadata\": {\n    \"preferences\": {\n      \"theme\": \"dark\"\n    }\n  }\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/users/me",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"users",
+								"me"
+							]
+						},
+						"description": "Update user profile fields (firstName, lastName, username, phoneNumber, metadata)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get User Sandboxes",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{jwt_token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/users/me/sandboxes?status=active&limit=50&offset=0",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"users",
+								"me",
+								"sandboxes"
+							],
+							"query": [
+								{
+									"key": "status",
+									"value": "active",
+									"description": "Filter by status (optional)"
+								},
+								{
+									"key": "limit",
+									"value": "50",
+									"description": "Number of results (default: 50)"
+								},
+								{
+									"key": "offset",
+									"value": "0",
+									"description": "Pagination offset (default: 0)"
+								}
+							]
+						},
+						"description": "Get all sandboxes for the authenticated user"
+					},
+					"response": []
+				}
+			],
+			"description": "User management endpoints (requires JWT authentication)"
+		},
+		{
+			"name": "API Keys",
+			"item": [
+				{
+					"name": "Create API Key",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 201) {",
+									"    var jsonData = pm.response.json();",
+									"    if (jsonData.apiKey && jsonData.apiKey.key) {",
+									"        pm.environment.set(\"api_key\", jsonData.apiKey.key);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{jwt_token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"My API Key\",\n  \"expiresInDays\": 30\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/keys",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"keys"
+							]
+						},
+						"description": "Create a new API key. Automatically saves API key to environment. Store it securely - it won't be shown again!"
+					},
+					"response": []
+				},
+				{
+					"name": "List API Keys",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{jwt_token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/keys",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"keys"
+							]
+						},
+						"description": "List all API keys for the authenticated user"
+					},
+					"response": []
+				},
+				{
+					"name": "Revoke API Key",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{jwt_token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/keys/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"keys",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "api-key-uuid-here",
+									"description": "API Key ID"
+								}
+							]
+						},
+						"description": "Revoke an API key by ID"
+					},
+					"response": []
+				}
+			],
+			"description": "API key management endpoints (requires JWT authentication)"
+		},
+		{
+			"name": "Sandboxes",
+			"item": [
+				{
+					"name": "Create Sandbox",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    if (jsonData.sandboxId) {",
+									"        pm.environment.set(\"sandbox_id\", jsonData.sandboxId);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"tier\": \"free\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/sandbox/create",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								"create"
+							]
+						},
+						"description": "Create a new sandbox. Automatically saves sandbox ID to environment."
+					},
+					"response": []
+				},
+				{
+					"name": "Get Sandbox Status",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/sandbox/:id/status",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								":id",
+								"status"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Get the status of a sandbox"
+					},
+					"response": []
+				},
+				{
+					"name": "Destroy Sandbox",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/sandbox/:id/destroy",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								":id",
+								"destroy"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Destroy a sandbox and clean up resources"
+					},
+					"response": []
+				},
+				{
+					"name": "Expose Port",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"containerPort\": 3000\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/sandbox/:id/expose",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								":id",
+								"expose"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Expose a container port and map it to a host port"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Exposed Ports",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/sandbox/:id/ports",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								":id",
+								"ports"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Get all exposed ports for a sandbox"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Sandbox Stats",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/sandbox/:id/stats",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								":id",
+								"stats"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Get resource usage statistics for a sandbox"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Quota Usage",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/sandbox/quota/usage",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								"quota",
+								"usage"
+							]
+						},
+						"description": "Get current quota usage and limits for the authenticated user"
+					},
+					"response": []
+				},
+				{
+					"name": "System Stats (Admin)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/sandbox/system/stats",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								"system",
+								"stats"
+							]
+						},
+						"description": "Get system-wide statistics (admin only - requires @insien.com email)"
+					},
+					"response": []
+				},
+				{
+					"name": "System Cleanup (Admin)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/sandbox/system/cleanup",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								"system",
+								"cleanup"
+							]
+						},
+						"description": "Cleanup expired sandboxes and unused images (admin only)"
+					},
+					"response": []
+				}
+			],
+			"description": "Sandbox management endpoints (requires API key authentication)"
+		},
+		{
+			"name": "Health",
+			"item": [
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/health",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"health"
+							]
+						},
+						"description": "Check API health status and service connectivity"
+					},
+					"response": []
+				}
+			],
+			"description": "Health check endpoint (public)"
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:3000",
+			"type": "string"
+		},
+		{
+			"key": "jwt_token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "api_key",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "sandbox_id",
+			"value": "",
+			"type": "string"
+		}
+	]
+}
+

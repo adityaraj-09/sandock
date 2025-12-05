@@ -19,7 +19,7 @@ npm install
 ```
 
 This will install:
-- `@clerk/clerk-sdk-node` - Clerk authentication
+- `jsonwebtoken` - JWT authentication
 - `pg` - PostgreSQL client
 - `redis` - Redis client
 - `express-rate-limit` - Rate limiting
@@ -79,8 +79,7 @@ cp .env.example .env
 Required variables:
 - `DATABASE_URL` - PostgreSQL connection string
 - `REDIS_URL` - Redis connection string (default: `redis://localhost:6379`)
-- `CLERK_SECRET_KEY` - From Clerk dashboard
-- `JWT_SECRET` - Generate with `openssl rand -base64 32`
+- `JWT_SECRET` - Generate with `openssl rand -base64 32` (required for JWT authentication)
 
 ## Step 6: Test the Integration
 
@@ -94,15 +93,32 @@ Required variables:
    curl http://localhost:3000/health
    ```
 
-3. **Test Clerk auth (requires Clerk setup):**
-   ```bash
-   curl -H "Authorization: Bearer <clerk_token>" http://localhost:3000/api/users/me
-   ```
-
-4. **Create API key:**
+3. **Register a new user:**
    ```bash
    curl -X POST \
-     -H "Authorization: Bearer <clerk_token>" \
+     -H "Content-Type: application/json" \
+     -d '{"email": "user@example.com", "password": "securepassword123", "firstName": "John", "lastName": "Doe"}' \
+     http://localhost:3000/api/auth/register
+   ```
+
+4. **Login:**
+   ```bash
+   curl -X POST \
+     -H "Content-Type: application/json" \
+     -d '{"email": "user@example.com", "password": "securepassword123"}' \
+     http://localhost:3000/api/auth/login
+   ```
+   Save the `token` from the response.
+
+5. **Test JWT auth:**
+   ```bash
+   curl -H "Authorization: Bearer <jwt_token>" http://localhost:3000/api/users/me
+   ```
+
+6. **Create API key:**
+   ```bash
+   curl -X POST \
+     -H "Authorization: Bearer <jwt_token>" \
      -H "Content-Type: application/json" \
      -d '{"name": "Test Key"}' \
      http://localhost:3000/api/keys
@@ -115,8 +131,10 @@ Required variables:
 - Redis used for ephemeral data (connections, metadata cache)
 
 ### Enhanced User Profile
-- Full user details from Clerk (name, username, image, etc.)
+- User registration and login with email/password
+- JWT-based authentication
 - User profile endpoints at `/api/users/me`
+- Users can update their profile fields
 
 ### Production Features
 - Structured logging
@@ -141,16 +159,16 @@ The old code used:
 
 The new code:
 - Uses PostgreSQL + Redis
-- Clerk authentication for users
+- JWT-based authentication (email/password)
 - API keys per user
 - Full user profiles
 
 ## Next Steps
 
-1. Set up Clerk account and get API key
-2. Configure PostgreSQL and Redis
-3. Run migrations
-4. Test authentication flow
+1. Configure PostgreSQL and Redis
+2. Run migrations (including the JWT migration)
+3. Register a new user account
+4. Test authentication flow (login/register)
 5. Create API keys
 6. Test sandbox creation with new API keys
 

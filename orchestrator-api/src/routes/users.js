@@ -15,7 +15,6 @@ router.get('/me', async (req, res) => {
     const result = await pool.query(
       `SELECT 
         id,
-        clerk_user_id,
         email,
         first_name,
         last_name,
@@ -60,13 +59,29 @@ router.get('/me', async (req, res) => {
 router.patch('/me', async (req, res) => {
   try {
     const userId = req.user.userId;
-    const { metadata } = req.body;
+    const { firstName, lastName, username, phoneNumber, metadata } = req.body;
 
-    // Only allow updating metadata (other fields come from Clerk)
+    // Allow updating user profile fields
     const updateFields = [];
     const updateValues = [];
     let paramCount = 1;
 
+    if (firstName !== undefined) {
+      updateFields.push(`first_name = $${++paramCount}`);
+      updateValues.push(firstName);
+    }
+    if (lastName !== undefined) {
+      updateFields.push(`last_name = $${++paramCount}`);
+      updateValues.push(lastName);
+    }
+    if (username !== undefined) {
+      updateFields.push(`username = $${++paramCount}`);
+      updateValues.push(username);
+    }
+    if (phoneNumber !== undefined) {
+      updateFields.push(`phone_number = $${++paramCount}`);
+      updateValues.push(phoneNumber);
+    }
     if (metadata !== undefined) {
       updateFields.push(`metadata = $${++paramCount}`);
       updateValues.push(JSON.stringify(metadata));
@@ -77,11 +92,12 @@ router.patch('/me', async (req, res) => {
     }
 
     updateValues.push(userId);
+    const userIdParam = updateValues.length;
 
     const result = await pool.query(
       `UPDATE users 
        SET ${updateFields.join(', ')}
-       WHERE id = $${paramCount}
+       WHERE id = $${userIdParam}
        RETURNING id, email, first_name, last_name, username, image_url, phone_number, metadata, updated_at`,
       updateValues
     );

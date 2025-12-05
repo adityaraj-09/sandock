@@ -3,7 +3,7 @@ import { Sandbox } from '../sdk/src/index.js';
 async function main() {
   // Simple initialization - only API key needed!
   const sandbox = new Sandbox({
-    apiKey: process.env.INSIEN_API_KEY || 'test-api-key'
+    apiKey: "isk_74476121bd2bca5919454685c702dd37bcd8f5c446691152e4d137200c5e8e47"
   });
 
   try {

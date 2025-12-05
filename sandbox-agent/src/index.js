@@ -16,6 +16,41 @@ if (!AGENT_TOKEN || !SANDBOX_ID) {
   process.exit(1);
 }
 
+// Ensure /app directory exists and is writable
+async function ensureAppDirectory() {
+  try {
+    await fs.access('/app');
+    console.log('/app directory exists');
+  } catch {
+    console.log('Creating /app directory...');
+    await fs.mkdir('/app', { recursive: true, mode: 0o755 });
+    console.log('/app directory created');
+  }
+  
+  // Verify write permissions
+  try {
+    const testFile = '/app/.write-test';
+    await fs.writeFile(testFile, 'test');
+    await fs.unlink(testFile);
+    console.log('/app directory is writable');
+  } catch (error) {
+    console.error(`/app directory is not writable: ${error.message}`);
+    // Try to fix permissions (if running as root)
+    try {
+      const { execSync } = await import('child_process');
+      execSync('chmod -R 755 /app', { stdio: 'ignore' });
+      console.log('Fixed /app permissions');
+    } catch (chmodError) {
+      console.error(`Could not fix permissions: ${chmodError.message}`);
+    }
+  }
+}
+
+// Initialize app directory on startup
+ensureAppDirectory().catch(err => {
+  console.error('Error initializing /app directory:', err);
+});
+
 let ws = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTRIES = 10;
@@ -141,14 +176,22 @@ async function handleWriteFile(id, path, content) {
     const cleanPath = path.replace(/^\.\//, '');
     const resolvedPath = cleanPath.startsWith('/') ? cleanPath : `/app/${cleanPath}`;
     
-    // Ensure directory exists
+    // Ensure /app directory exists with proper permissions
+    try {
+      await fs.access('/app');
+    } catch {
+      // /app doesn't exist, create it
+      await fs.mkdir('/app', { recursive: true, mode: 0o755 });
+      console.log('Created /app directory');
+    }
+    
+    // Ensure parent directory exists
     const dir = dirname(resolvedPath);
-    await fs.mkdir(dir, { recursive: true });
+    await fs.mkdir(dir, { recursive: true, mode: 0o755 });
 
     // Write file
     await fs.writeFile(resolvedPath, content, 'utf8');
     
-    console.log(`File written: ${resolvedPath}`); // Debug log
 
     sendResponse(id, {
       type: 'writeResponse',
@@ -157,6 +200,12 @@ async function handleWriteFile(id, path, content) {
     });
   } catch (error) {
     console.error(`Error writing file ${path}:`, error);
+    console.error(`Error details:`, {
+      code: error.code,
+      errno: error.errno,
+      path: error.path,
+      syscall: error.syscall
+    });
     sendError(id, `Failed to write file: ${error.message}`);
   }
 }

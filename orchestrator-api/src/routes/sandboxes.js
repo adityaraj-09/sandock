@@ -36,17 +36,26 @@ export default function createSandboxesRouter(dependencies) {
   // Shared port counter (could be moved to Redis for multi-instance)
   let nextAvailablePort = 30000;
 
-  // Create sandbox
-  router.post('/create', authenticateApiKey, strictLimiter, async (req, res) => {
+  router.post('/create', authenticateApiKey(), strictLimiter, async (req, res) => {
+    const startTime = Date.now();
+    let sandboxId = null;
+    
     try {
-      const sandboxId = uuidv4();
+      logger.info('[SANDBOX_CREATE] Request received');
+      sandboxId = uuidv4();
       const userId = req.user.userId;
       const apiKeyId = req.user.apiKeyId;
-      const userTier = req.body.tier || req.user.tier || 'free'; // Get user tier
+      const userTier = req.body.tier || req.user.tier || 'free';
+      
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Starting creation for user ${userId}, apiKey ${apiKeyId}, tier ${userTier}`);
 
       // Check if user can create a new sandbox
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Checking quota limits...`);
       const canCreate = await resourceManager.canCreateSandbox(userId, apiKeyId, userTier);
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Quota check result:`, canCreate);
+      
       if (!canCreate.allowed) {
+        logger.warn(`[SANDBOX_CREATE:${sandboxId}] Quota limit exceeded: ${canCreate.reason}`);
         return res.status(429).json({ 
           error: 'Sandbox creation limit exceeded',
           reason: canCreate.reason 
@@ -54,31 +63,54 @@ export default function createSandboxesRouter(dependencies) {
       }
 
       // Create JWT token for agent authentication
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Creating agent JWT token...`);
       const agentToken = jwt.sign(
         { sandboxId, type: 'agent', userId, tier: userTier },
         JWT_SECRET,
         { expiresIn: '24h' }
       );
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Agent token created`);
 
       // Get optimized container configuration
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Getting container configuration...`);
       let containerConfig = resourceManager.getContainerConfig(sandboxId, agentToken, userTier);
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Container config created:`, {
+        name: containerConfig.name,
+        image: containerConfig.Image,
+        memory: containerConfig.HostConfig?.Memory,
+        cpuShares: containerConfig.HostConfig?.CpuShares
+      });
       
       // Add host configuration for orchestrator connection
       if (ORCHESTRATOR_HOST === 'host.docker.internal') {
         containerConfig.HostConfig.ExtraHosts = ['host.docker.internal:host-gateway'];
+        logger.debug(`[SANDBOX_CREATE:${sandboxId}] Added host.docker.internal mapping`);
       }
 
       // Optimize container for faster startup
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Optimizing container startup...`);
       containerConfig = await containerOptimizer.optimizeContainerStartup(containerConfig);
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Container startup optimized`);
       
       // Use optimized image if available
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Getting optimized image for ${AGENT_IMAGE}...`);
       const optimizedImage = await containerOptimizer.optimizeAgentImage(AGENT_IMAGE);
       containerConfig.Image = optimizedImage;
+      logger.info(`[SANDBOX_CREATE:${sandboxId}] Using image: ${optimizedImage}`);
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Container config before creation:`, {
+        Image: containerConfig.Image,
+        name: containerConfig.name,
+        Memory: containerConfig.HostConfig?.Memory,
+        CpuShares: containerConfig.HostConfig?.CpuShares
+      });
 
       // Create and start container with resource limits
+      logger.info(`[SANDBOX_CREATE:${sandboxId}] Creating Docker container...`);
       const container = await docker.createContainer(containerConfig);
+      logger.info(`[SANDBOX_CREATE:${sandboxId}] Container created: ${container.id}`);
       
       // Start container with timeout
+      logger.info(`[SANDBOX_CREATE:${sandboxId}] Starting container (timeout: ${RESOURCE_LIMITS.SYSTEM.CONTAINER_STARTUP_TIMEOUT_SECONDS}s)...`);
       const startPromise = container.start();
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Container startup timeout')), 
@@ -86,15 +118,36 @@ export default function createSandboxesRouter(dependencies) {
       );
 
       await Promise.race([startPromise, timeoutPromise]);
+      logger.info(`[SANDBOX_CREATE:${sandboxId}] Container started successfully`);
+      
+      // Verify container is actually running
+      try {
+        const containerInfo = await container.inspect();
+        
+        if (!containerInfo.State.Running) {
+          const logs = await container.logs({ stdout: true, stderr: true, tail: 50 });
+          logger.error(`[SANDBOX_CREATE:${sandboxId}] Container stopped immediately. Logs: ${logs.toString()}`);
+          throw new Error(`Container stopped immediately. Status: ${containerInfo.State.Status}, ExitCode: ${containerInfo.State.ExitCode}`);
+        }
+      } catch (error) {
+        logger.error(`[SANDBOX_CREATE:${sandboxId}] Container verification failed:`, error);
+        throw error;
+      }
+
+      // Get container name from config or container object
+      const containerName = containerConfig.name || `sandbox-${sandboxId}`;
 
       // Store sandbox in database
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Storing sandbox in database...`);
       await pool.query(
         `INSERT INTO sandboxes (id, user_id, api_key_id, status, metadata)
          VALUES ($1, $2, $3, 'active', $4)`,
-        [sandboxId, userId, apiKeyId, JSON.stringify({ containerName })]
+        [sandboxId, userId, apiKeyId, JSON.stringify({ containerName, containerId: container.id })]
       );
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Sandbox stored in database`);
 
       // Store metadata in Redis with enhanced information
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Storing metadata in Redis...`);
       await setSandboxMetadata(sandboxId, {
         userId,
         apiKeyId,
@@ -110,9 +163,12 @@ export default function createSandboxesRouter(dependencies) {
         image: optimizedImage,
         expiresAt: new Date(Date.now() + RESOURCE_LIMITS.USER.SANDBOX_LIFETIME_HOURS * 60 * 60 * 1000).toISOString()
       });
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Metadata stored in Redis`);
 
-      logger.info(`Sandbox created: ${sandboxId} for user ${userId} (tier: ${userTier})`);
+      const duration = Date.now() - startTime;
+      logger.info(`[SANDBOX_CREATE:${sandboxId}] Sandbox created successfully in ${duration}ms for user ${userId} (tier: ${userTier})`);
       
+      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Sending response...`);
       res.json({
         sandboxId,
         agentUrl: `ws://localhost:${WS_PORT}/agent/${sandboxId}`,
@@ -124,14 +180,36 @@ export default function createSandboxesRouter(dependencies) {
         },
         expiresAt: new Date(Date.now() + RESOURCE_LIMITS.USER.SANDBOX_LIFETIME_HOURS * 60 * 60 * 1000).toISOString()
       });
+      logger.info(`[SANDBOX_CREATE:${sandboxId}] Response sent successfully`);
     } catch (error) {
-      logger.error('Error creating sandbox:', error);
-      res.status(500).json({ error: error.message });
+      const duration = Date.now() - startTime;
+      logger.error(`[SANDBOX_CREATE:${sandboxId || 'unknown'}] Error after ${duration}ms:`, error);
+      logger.error(`[SANDBOX_CREATE:${sandboxId || 'unknown'}] Error stack:`, error.stack);
+      
+      // Try to clean up container if it was created
+      if (sandboxId) {
+        try {
+          const metadata = await getSandboxMetadata(sandboxId);
+          if (metadata && metadata.containerId) {
+            logger.warn(`[SANDBOX_CREATE:${sandboxId}] Attempting to clean up container ${metadata.containerId}`);
+            const container = docker.getContainer(metadata.containerId);
+            await container.stop().catch(() => {});
+            await container.remove().catch(() => {});
+          }
+        } catch (cleanupError) {
+          logger.error(`[SANDBOX_CREATE:${sandboxId}] Cleanup error:`, cleanupError);
+        }
+      }
+      
+      res.status(500).json({ 
+        error: error.message,
+        sandboxId: sandboxId || null
+      });
     }
   });
 
   // Destroy sandbox
-  router.post('/:id/destroy', authenticateApiKey, async (req, res) => {
+  router.post('/:id/destroy', authenticateApiKey(), async (req, res) => {
     try {
       const { id } = req.params;
       const userId = req.user.userId;
@@ -192,7 +270,7 @@ export default function createSandboxesRouter(dependencies) {
   });
 
   // Get sandbox status
-  router.get('/:id/status', authenticateApiKey, async (req, res) => {
+  router.get('/:id/status', authenticateApiKey(), async (req, res) => {
     try {
       const { id } = req.params;
       const userId = req.user.userId;
@@ -208,12 +286,30 @@ export default function createSandboxesRouter(dependencies) {
 
       const metadata = await getSandboxMetadata(id);
       const agentConnected = agentConnections.has(id);
+      
+      // Check container status if metadata exists
+      let containerStatus = null;
+      if (metadata && metadata.containerId) {
+        try {
+          const container = docker.getContainer(metadata.containerId);
+          const containerInfo = await container.inspect();
+          containerStatus = {
+            running: containerInfo.State.Running,
+            status: containerInfo.State.Status,
+            exitCode: containerInfo.State.ExitCode,
+            error: containerInfo.State.Error
+          };
+        } catch (error) {
+          containerStatus = { error: 'Container not found or removed' };
+        }
+      }
 
       res.json({
         sandboxId: id,
         connected: agentConnected,
         createdAt: sandboxResult.rows[0].created_at,
-        status: sandboxResult.rows[0].status
+        status: sandboxResult.rows[0].status,
+        containerStatus
       });
     } catch (error) {
       logger.error('Error getting sandbox status:', error);
@@ -222,7 +318,7 @@ export default function createSandboxesRouter(dependencies) {
   });
 
   // Expose port
-  router.post('/:id/expose', authenticateApiKey, async (req, res) => {
+  router.post('/:id/expose', authenticateApiKey(), async (req, res) => {
     try {
       const { id } = req.params;
       const { containerPort } = req.body;
@@ -334,11 +430,28 @@ export default function createSandboxesRouter(dependencies) {
         });
       }
 
-      // Recreate container with port mapping
+      // Recreate container with port mapping - preserve original config
+      const originalHostConfig = containerInfo.HostConfig || {};
       const hostConfig = {
-        NetworkMode: 'bridge',
-        AutoRemove: true,
-        PortBindings: portBindings
+        NetworkMode: originalHostConfig.NetworkMode || 'bridge',
+        AutoRemove: false, // Changed to false to match original config
+        PortBindings: portBindings,
+        // Preserve original resource limits
+        Memory: originalHostConfig.Memory,
+        MemorySwap: originalHostConfig.MemorySwap,
+        MemoryReservation: originalHostConfig.MemoryReservation,
+        CpuShares: originalHostConfig.CpuShares,
+        CpuPeriod: originalHostConfig.CpuPeriod,
+        CpuQuota: originalHostConfig.CpuQuota,
+        // Preserve security settings
+        SecurityOpt: originalHostConfig.SecurityOpt,
+        ReadonlyRootfs: false, // Keep writable
+        Ulimits: originalHostConfig.Ulimits,
+        Tmpfs: originalHostConfig.Tmpfs,
+        Privileged: originalHostConfig.Privileged || false,
+        PidsLimit: originalHostConfig.PidsLimit,
+        OomKillDisable: originalHostConfig.OomKillDisable || false,
+        RestartPolicy: originalHostConfig.RestartPolicy || { Name: 'no' }
       };
 
       if (ORCHESTRATOR_HOST === 'host.docker.internal') {
@@ -350,8 +463,9 @@ export default function createSandboxesRouter(dependencies) {
         exposedPorts[port] = {};
       });
 
-      // Get original container environment
+      // Get original container environment and config
       const originalEnv = containerInfo.Config.Env || [];
+      const originalConfig = containerInfo.Config || {};
       
       const newContainer = await docker.createContainer({
         Image: AGENT_IMAGE,
@@ -359,9 +473,11 @@ export default function createSandboxesRouter(dependencies) {
         Env: originalEnv,
         HostConfig: hostConfig,
         ExposedPorts: exposedPorts,
-        Tty: false,
-        OpenStdin: true,
-        StdinOnce: false
+        WorkingDir: originalConfig.WorkingDir || '/app', // Preserve working directory
+        Tty: originalConfig.Tty || false,
+        OpenStdin: originalConfig.OpenStdin !== undefined ? originalConfig.OpenStdin : true,
+        StdinOnce: originalConfig.StdinOnce || false,
+        Labels: originalConfig.Labels || {}
       });
 
       await newContainer.start();
@@ -397,7 +513,7 @@ export default function createSandboxesRouter(dependencies) {
   });
 
   // Get exposed ports
-  router.get('/:id/ports', authenticateApiKey, async (req, res) => {
+  router.get('/:id/ports', authenticateApiKey(), async (req, res) => {
     try {
       const { id } = req.params;
       const userId = req.user.userId;
@@ -427,7 +543,7 @@ export default function createSandboxesRouter(dependencies) {
   });
 
   // Get sandbox resource usage
-  router.get('/:id/stats', authenticateApiKey, async (req, res) => {
+  router.get('/:id/stats', authenticateApiKey(), async (req, res) => {
     try {
       const { id } = req.params;
       const userId = req.user.userId;
@@ -474,7 +590,7 @@ export default function createSandboxesRouter(dependencies) {
   });
 
   // Get user's sandbox quota and usage
-  router.get('/quota/usage', authenticateApiKey, async (req, res) => {
+  router.get('/quota/usage', authenticateApiKey(), async (req, res) => {
     try {
       const userId = req.user.userId;
       const apiKeyId = req.user.apiKeyId;
@@ -517,7 +633,7 @@ export default function createSandboxesRouter(dependencies) {
   });
 
   // System stats endpoint (admin only)
-  router.get('/system/stats', authenticateApiKey, async (req, res) => {
+  router.get('/system/stats', authenticateApiKey(), async (req, res) => {
     try {
       // Check if user has admin privileges (you might want to add proper admin check)
       const isAdmin = req.user.email?.endsWith('@insien.com') || process.env.NODE_ENV === 'development';
@@ -550,7 +666,7 @@ export default function createSandboxesRouter(dependencies) {
   });
 
   // Cleanup endpoint (admin only)
-  router.post('/system/cleanup', authenticateApiKey, async (req, res) => {
+  router.post('/system/cleanup', authenticateApiKey(), async (req, res) => {
     try {
       // Check if user has admin privileges
       const isAdmin = req.user.email?.endsWith('@insien.com') || process.env.NODE_ENV === 'development';

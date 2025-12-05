@@ -1,109 +1,146 @@
-import { clerkClient } from '@clerk/clerk-sdk-node';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcrypt';
 import pool from '../db/index.js';
+import { z } from 'zod';
 
-const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY;
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const SALT_ROUNDS = 12;
 
-if (!CLERK_SECRET_KEY) {
-  console.warn('CLERK_SECRET_KEY not set. Authentication will be disabled.');
-}
+// Validation schemas
+const registerSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8).max(100),
+  firstName: z.string().optional(),
+  lastName: z.string().optional(),
+  username: z.string().optional()
+});
 
-// Get or create user from Clerk
-export async function getOrCreateUser(clerkUserId, clerkUserData) {
+const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string()
+});
+
+// Register a new user
+export async function registerUser(userData) {
+  const validated = registerSchema.parse(userData);
+  
   const client = await pool.connect();
   try {
-    // Check if user exists
-    let result = await client.query(
-      'SELECT * FROM users WHERE clerk_user_id = $1',
-      [clerkUserId]
+    // Check if user already exists
+    const existingUser = await client.query(
+      'SELECT id FROM users WHERE email = $1',
+      [validated.email]
     );
 
-    if (result.rows.length > 0) {
-      const existingUser = result.rows[0];
-      
-      // Update user data if it has changed
-      const updateFields = [];
-      const updateValues = [];
-      let paramCount = 1;
-      
-      if (clerkUserData.emailAddresses?.[0]?.emailAddress !== existingUser.email) {
-        updateFields.push(`email = $${++paramCount}`);
-        updateValues.push(clerkUserData.emailAddresses[0].emailAddress);
-      }
-      if (clerkUserData.firstName !== existingUser.first_name) {
-        updateFields.push(`first_name = $${++paramCount}`);
-        updateValues.push(clerkUserData.firstName);
-      }
-      if (clerkUserData.lastName !== existingUser.last_name) {
-        updateFields.push(`last_name = $${++paramCount}`);
-        updateValues.push(clerkUserData.lastName);
-      }
-      if (clerkUserData.username !== existingUser.username) {
-        updateFields.push(`username = $${++paramCount}`);
-        updateValues.push(clerkUserData.username);
-      }
-      if (clerkUserData.imageUrl !== existingUser.image_url) {
-        updateFields.push(`image_url = $${++paramCount}`);
-        updateValues.push(clerkUserData.imageUrl);
-      }
-      if (clerkUserData.phoneNumbers?.[0]?.phoneNumber !== existingUser.phone_number) {
-        updateFields.push(`phone_number = $${++paramCount}`);
-        updateValues.push(clerkUserData.phoneNumbers?.[0]?.phoneNumber || null);
-      }
-      
-      if (updateFields.length > 0) {
-        updateValues.push(clerkUserId);
-        const updateQuery = `
-          UPDATE users 
-          SET ${updateFields.join(', ')}
-          WHERE clerk_user_id = $1
-          RETURNING *
-        `;
-        result = await client.query(updateQuery, updateValues);
-        return result.rows[0];
-      }
-      
-      return existingUser;
+    if (existingUser.rows.length > 0) {
+      throw new Error('User with this email already exists');
     }
 
-    // Create new user
-    result = await client.query(
+    // Hash password
+    const passwordHash = await bcrypt.hash(validated.password, SALT_ROUNDS);
+
+    // Create user
+    const result = await client.query(
       `INSERT INTO users (
-        clerk_user_id, 
-        email, 
-        first_name, 
-        last_name, 
-        username, 
-        image_url, 
-        phone_number,
+        email,
+        password_hash,
+        first_name,
+        last_name,
+        username,
         metadata
       ) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
-       RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6) 
+       RETURNING id, email, first_name, last_name, username, image_url, phone_number, metadata, created_at`,
       [
-        clerkUserId,
-        clerkUserData.emailAddresses?.[0]?.emailAddress || '',
-        clerkUserData.firstName || null,
-        clerkUserData.lastName || null,
-        clerkUserData.username || null,
-        clerkUserData.imageUrl || null,
-        clerkUserData.phoneNumbers?.[0]?.phoneNumber || null,
-        JSON.stringify(clerkUserData.publicMetadata || {})
+        validated.email,
+        passwordHash,
+        validated.firstName || null,
+        validated.lastName || null,
+        validated.username || null,
+        JSON.stringify({})
       ]
     );
 
-    return result.rows[0];
+    const user = result.rows[0];
+    
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: user.id, email: user.email },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        username: user.username,
+        imageUrl: user.image_url,
+        phoneNumber: user.phone_number,
+        metadata: user.metadata,
+        createdAt: user.created_at
+      },
+      token
+    };
   } finally {
     client.release();
   }
 }
 
-// Verify Clerk token and get user
-export async function verifyAuth(req) {
-  if (!CLERK_SECRET_KEY) {
-    // Development mode - allow bypass
-    return { userId: 'dev-user', email: 'dev@example.com' };
-  }
+// Login user
+export async function loginUser(email, password) {
+  const validated = loginSchema.parse({ email, password });
+  
+  const client = await pool.connect();
+  try {
+    // Find user by email
+    const result = await client.query(
+      'SELECT * FROM users WHERE email = $1',
+      [validated.email]
+    );
 
+    if (result.rows.length === 0) {
+      throw new Error('Invalid email or password');
+    }
+
+    const user = result.rows[0];
+
+    // Verify password
+    const isValidPassword = await bcrypt.compare(validated.password, user.password_hash);
+    if (!isValidPassword) {
+      throw new Error('Invalid email or password');
+    }
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: user.id, email: user.email },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        username: user.username,
+        imageUrl: user.image_url,
+        phoneNumber: user.phone_number,
+        metadata: user.metadata,
+        createdAt: user.created_at
+      },
+      token
+    };
+  } finally {
+    client.release();
+  }
+}
+
+// Verify JWT token and get user
+export async function verifyAuth(req) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     throw new Error('No authorization token provided');
@@ -112,31 +149,38 @@ export async function verifyAuth(req) {
   const token = authHeader.replace('Bearer ', '');
   
   try {
-    // Verify token with Clerk
-    const session = await clerkClient.verifyToken(token);
-    const clerkUser = await clerkClient.users.getUser(session.sub);
+    // Verify JWT token
+    const decoded = jwt.verify(token, JWT_SECRET);
     
-    // Get or create user in our DB with full user data
-    const dbUser = await getOrCreateUser(clerkUser.id, {
-      emailAddresses: clerkUser.emailAddresses,
-      firstName: clerkUser.firstName,
-      lastName: clerkUser.lastName,
-      username: clerkUser.username,
-      imageUrl: clerkUser.imageUrl,
-      phoneNumbers: clerkUser.phoneNumbers,
-      publicMetadata: clerkUser.publicMetadata
-    });
-    
-    return {
-      userId: dbUser.id,
-      clerkUserId: clerkUser.id,
-      email: dbUser.email,
-      firstName: dbUser.first_name,
-      lastName: dbUser.last_name,
-      username: dbUser.username,
-      imageUrl: dbUser.image_url
-    };
+    // Get user from database
+    const client = await pool.connect();
+    try {
+      const result = await client.query(
+        'SELECT * FROM users WHERE id = $1',
+        [decoded.userId]
+      );
+
+      if (result.rows.length === 0) {
+        throw new Error('User not found');
+      }
+
+      const user = result.rows[0];
+      
+      return {
+        userId: user.id,
+        email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        username: user.username,
+        imageUrl: user.image_url
+      };
+    } finally {
+      client.release();
+    }
   } catch (error) {
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      throw new Error('Invalid or expired token');
+    }
     throw new Error(`Authentication failed: ${error.message}`);
   }
 }
@@ -153,4 +197,3 @@ export function requireAuth() {
     }
   };
 }
-

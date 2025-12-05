@@ -8,16 +8,22 @@ export class ContainerOptimizer {
 
   // Optimize Docker image by building a minimal version
   async optimizeAgentImage(baseImage = 'sandbox-agent:latest') {
+    const startTime = Date.now();
     try {
+      logger.debug(`[CONTAINER_OPTIMIZER] Optimizing image: ${baseImage}`);
       // Check if optimized image already exists
       const optimizedTag = `${baseImage}-optimized`;
       
       try {
         await this.docker.getImage(optimizedTag).inspect();
-        logger.info(`Using cached optimized image: ${optimizedTag}`);
+        const duration = Date.now() - startTime;
+        logger.info(`[CONTAINER_OPTIMIZER] Using cached optimized image: ${optimizedTag} (${duration}ms)`);
         return optimizedTag;
       } catch (error) {
-        // Image doesn't exist, create it
+        logger.debug(`[CONTAINER_OPTIMIZER] Optimized image not found, will use base image: ${baseImage}`);
+        // Image doesn't exist, fallback to base image instead of trying to build
+        logger.warn(`[CONTAINER_OPTIMIZER] Skipping optimized image creation, using base image: ${baseImage}`);
+        return baseImage;
       }
 
       // Create Dockerfile for optimized image
@@ -176,6 +182,7 @@ LABEL maintainer="insien" \\
 
   // Optimize container startup
   async optimizeContainerStartup(containerConfig) {
+    logger.debug(`[CONTAINER_OPTIMIZER] Optimizing container startup configuration`);
     // Add optimizations for faster startup
     const optimizedConfig = {
       ...containerConfig,
@@ -190,9 +197,7 @@ LABEL maintainer="insien" \\
         // Optimize shared memory
         ShmSize: 64 * 1024 * 1024, // 64MB
         
-        // Faster I/O
-        IOMaximumBandwidth: 10 * 1024 * 1024, // 10MB/s
-        IOMaximumIOps: 1000,
+        // Removed to avoid "QoS maximum bandwidth configuration is not supported" error
       },
       
       // Optimize environment
@@ -204,6 +209,7 @@ LABEL maintainer="insien" \\
       ]
     };
 
+    logger.debug(`[CONTAINER_OPTIMIZER] Container startup optimization completed`);
     return optimizedConfig;
   }
 

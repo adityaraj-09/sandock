@@ -1,8 +1,8 @@
--- Users table (linked to Clerk user IDs)
+-- Users table (JWT-based authentication)
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    clerk_user_id VARCHAR(255) UNIQUE NOT NULL,
-    email VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
     first_name VARCHAR(255),
     last_name VARCHAR(255),
     username VARCHAR(255),
@@ -44,7 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS idx_api_keys_revoked ON api_keys(revoked_at) WHERE revoked_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_sandboxes_user_id ON sandboxes(user_id);
 CREATE INDEX IF NOT EXISTS idx_sandboxes_status ON sandboxes(status);
-CREATE INDEX IF NOT EXISTS idx_users_clerk_id ON users(clerk_user_id);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
 -- Function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
