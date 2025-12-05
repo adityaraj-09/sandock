@@ -1,6 +1,7 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
+import WebSocket from 'ws';
 import { authenticateApiKey } from '../middleware/apiKeyAuth.js';
 import { strictLimiter } from '../middleware/security.js';
 import { logger } from '../utils/logger.js';
@@ -687,6 +688,205 @@ export default function createSandboxesRouter(dependencies) {
       });
     } catch (error) {
       logger.error('Error during cleanup:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  router.post('/execute', authenticateApiKey(), strictLimiter, async (req, res) => {
+    try {
+      const { code, language, timeout, input } = req.body;
+      const userId = req.user.userId;
+      const apiKeyId = req.user.apiKeyId;
+
+      if (!code || !language) {
+        return res.status(400).json({ error: 'code and language are required' });
+      }
+
+      const sandboxId = uuidv4();
+      const userTier = req.body.tier || 'free';
+
+      logger.info(`[CODE_EXECUTE:${sandboxId}] Executing ${language} code for user ${userId}`);
+
+      const canCreate = await resourceManager.canCreateSandbox(userId, apiKeyId, userTier);
+      if (!canCreate.allowed) {
+        return res.status(429).json({
+          error: 'Sandbox creation limit exceeded',
+          reason: canCreate.reason
+        });
+      }
+
+      const agentToken = jwt.sign(
+        { sandboxId, type: 'agent', userId, tier: userTier },
+        JWT_SECRET,
+        { expiresIn: '1h' }
+      );
+
+      let containerConfig = resourceManager.getContainerConfig(sandboxId, agentToken, userTier);
+      containerConfig.Image = AGENT_IMAGE;
+
+      if (ORCHESTRATOR_HOST === 'host.docker.internal') {
+        containerConfig.HostConfig.ExtraHosts = ['host.docker.internal:host-gateway'];
+      }
+
+      const container = await docker.createContainer(containerConfig);
+      await container.start();
+
+      await pool.query(
+        `INSERT INTO sandboxes (id, user_id, api_key_id, status, metadata)
+         VALUES ($1, $2, $3, 'active', $4)`,
+        [sandboxId, userId, apiKeyId, JSON.stringify({ containerId: container.id, execution: true })]
+      );
+
+      await setSandboxMetadata(sandboxId, {
+        userId,
+        apiKeyId,
+        containerId: container.id,
+        createdAt: new Date().toISOString(),
+        tier: userTier,
+        execution: true
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      const ws = new WebSocket(`${process.env.WS_URL || 'ws://localhost:3001'}/client/${sandboxId}`);
+      
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('WebSocket connection timeout')), 10000);
+        ws.on('open', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        ws.on('error', reject);
+      });
+
+      const SUPPORTED_LANGUAGES = {
+        javascript: { extension: 'js', command: 'node', args: [] },
+        python: { extension: 'py', command: 'python3', args: [] },
+        java: { extension: 'java', command: 'javac', runCommand: 'java' },
+        cpp: { extension: 'cpp', command: 'g++', args: ['-o', 'main', '-std=c++17'], runCommand: './main' },
+        go: { extension: 'go', command: 'go', args: ['run'] },
+        rust: { extension: 'rs', command: 'rustc', args: ['-o', 'main'], runCommand: './main' }
+      };
+
+      const langConfig = SUPPORTED_LANGUAGES[language.toLowerCase()];
+      if (!langConfig) {
+        await container.stop();
+        await container.remove();
+        await cleanupSandbox(sandboxId);
+        return res.status(400).json({ error: `Unsupported language: ${language}` });
+      }
+
+      const fileName = `main.${langConfig.extension}`;
+      const execTimeout = timeout || 5000;
+
+      const writeFile = (path, content) => {
+        return new Promise((resolve, reject) => {
+          const id = uuidv4();
+          ws.send(JSON.stringify({ id, type: 'write', path, content }));
+          const handler = (message) => {
+            const data = JSON.parse(message.toString());
+            if (data.id === id) {
+              ws.removeListener('message', handler);
+              if (data.type === 'error') {
+                reject(new Error(data.error));
+              } else {
+                resolve(data);
+              }
+            }
+          };
+          ws.on('message', handler);
+          setTimeout(() => {
+            ws.removeListener('message', handler);
+            reject(new Error('Write timeout'));
+          }, 5000);
+        });
+      };
+
+      const runCommand = (cmd, args) => {
+        return new Promise((resolve, reject) => {
+          const id = uuidv4();
+          ws.send(JSON.stringify({ id, type: 'exec', cmd, args }));
+          const handler = (message) => {
+            const data = JSON.parse(message.toString());
+            if (data.id === id) {
+              ws.removeListener('message', handler);
+              if (data.type === 'error') {
+                reject(new Error(data.error));
+              } else {
+                resolve(data);
+              }
+            }
+          };
+          ws.on('message', handler);
+          setTimeout(() => {
+            ws.removeListener('message', handler);
+            reject(new Error('Execution timeout'));
+          }, execTimeout);
+        });
+      };
+
+      await writeFile(fileName, code);
+
+      let result;
+      let compileResult = null;
+
+      if (langConfig.runCommand) {
+        if (langConfig.command === 'javac') {
+          compileResult = await runCommand(langConfig.command, [fileName]);
+          if (compileResult.exitCode !== 0) {
+            await container.stop();
+            await container.remove();
+            await cleanupSandbox(sandboxId);
+            ws.close();
+            return res.json({
+              success: false,
+              error: 'Compilation failed',
+              stdout: compileResult.stdout,
+              stderr: compileResult.stderr,
+              exitCode: compileResult.exitCode
+            });
+          }
+          const className = fileName.replace('.java', '');
+          result = await runCommand(langConfig.runCommand, [className]);
+        } else {
+          compileResult = await runCommand(langConfig.command, [...langConfig.args, fileName]);
+          if (compileResult.exitCode !== 0) {
+            await container.stop();
+            await container.remove();
+            await cleanupSandbox(sandboxId);
+            ws.close();
+            return res.json({
+              success: false,
+              error: 'Compilation failed',
+              stdout: compileResult.stdout,
+              stderr: compileResult.stderr,
+              exitCode: compileResult.exitCode
+            });
+          }
+          result = await runCommand('sh', ['-c', langConfig.runCommand]);
+        }
+      } else {
+        result = await runCommand(langConfig.command, [...langConfig.args, fileName]);
+      }
+
+      await container.stop();
+      await container.remove();
+      await cleanupSandbox(sandboxId);
+      ws.close();
+
+      res.json({
+        success: result.exitCode === 0,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exitCode: result.exitCode,
+        compileResult: compileResult ? {
+          stdout: compileResult.stdout,
+          stderr: compileResult.stderr,
+          exitCode: compileResult.exitCode
+        } : null
+      });
+    } catch (error) {
+      logger.error('Error executing code:', error);
       res.status(500).json({ error: error.message });
     }
   });

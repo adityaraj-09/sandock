@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import { v4 as uuidv4 } from 'uuid';
+import { getLanguageConfig, getFileName, SUPPORTED_LANGUAGES } from './languages.js';
 
 export class Sandbox {
   constructor(options = {}) {
@@ -396,6 +397,122 @@ export class Sandbox {
     } catch (error) {
       throw new Error(`Failed to destroy sandbox: ${error.message}`);
     }
+  }
+
+  async runCode(code, language, options = {}) {
+    const {
+      fileName,
+      timeout,
+      autoDestroy = true,
+      input = '',
+      args = []
+    } = options;
+
+    const langConfig = getLanguageConfig(language);
+    const file = fileName || getFileName(language);
+    const execTimeout = timeout || langConfig.timeout;
+
+    if (!this.connected) {
+      await this.create();
+    }
+
+    await this.writeFile(file, code);
+
+    let result;
+    let compileResult = null;
+
+    try {
+      if (langConfig.runCommand) {
+        if (langConfig.command === 'javac') {
+          compileResult = await this.runCommand(langConfig.command, [file], { timeout: execTimeout });
+          if (compileResult.exitCode !== 0) {
+            const response = {
+              success: false,
+              error: 'Compilation failed',
+              stdout: compileResult.stdout,
+              stderr: compileResult.stderr,
+              exitCode: compileResult.exitCode,
+              language,
+              fileName: file
+            };
+            if (autoDestroy) await this.destroy();
+            return response;
+          }
+          const className = file.replace('.java', '');
+          result = await this.runCommand(langConfig.runCommand, [className, ...args], { timeout: execTimeout });
+        } else {
+          compileResult = await this.runCommand(langConfig.command, [...langConfig.args, file], { timeout: execTimeout });
+          if (compileResult.exitCode !== 0) {
+            const response = {
+              success: false,
+              error: 'Compilation failed',
+              stdout: compileResult.stdout,
+              stderr: compileResult.stderr,
+              exitCode: compileResult.exitCode,
+              language,
+              fileName: file
+            };
+            if (autoDestroy) await this.destroy();
+            return response;
+          }
+          result = await this.runCommand('sh', ['-c', langConfig.runCommand], { timeout: execTimeout });
+        }
+      } else {
+        const cmdArgs = [...langConfig.args, file, ...args];
+        result = await this.runCommand(langConfig.command, cmdArgs, { timeout: execTimeout });
+      }
+
+      if (input) {
+        const inputCmd = langConfig.runCommand 
+          ? `echo "${input}" | ${langConfig.runCommand}`
+          : `echo "${input}" | ${langConfig.command} ${file}`;
+        const inputResult = await this.runCommand('sh', ['-c', inputCmd], { timeout: execTimeout });
+        result = inputResult;
+      }
+
+      const response = {
+        success: result.exitCode === 0,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exitCode: result.exitCode,
+        language,
+        fileName: file,
+        executionTime: execTimeout
+      };
+
+      if (compileResult) {
+        response.compileResult = {
+          stdout: compileResult.stdout,
+          stderr: compileResult.stderr,
+          exitCode: compileResult.exitCode
+        };
+      }
+
+      if (autoDestroy) {
+        await this.destroy();
+      }
+
+      return response;
+    } catch (error) {
+      const response = {
+        success: false,
+        error: error.message,
+        language,
+        fileName: file
+      };
+      if (autoDestroy) {
+        try {
+          await this.destroy();
+        } catch (destroyError) {
+          // Ignore destroy errors
+        }
+      }
+      return response;
+    }
+  }
+
+  static getSupportedLanguages() {
+    return Object.keys(SUPPORTED_LANGUAGES);
   }
 }
 

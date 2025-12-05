@@ -14,8 +14,8 @@ async function migrate() {
     // Run schema.sql first (creates tables if they don't exist)
     // Wrap in try-catch to handle already existing objects
     try {
-      const schema = readFileSync(join(__dirname, 'schema.sql'), 'utf8');
-      await client.query(schema);
+    const schema = readFileSync(join(__dirname, 'schema.sql'), 'utf8');
+    await client.query(schema);
       console.log('✓ Schema applied');
     } catch (error) {
       if (error.code === '42710' || error.code === '42P07') {

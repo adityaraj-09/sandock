@@ -34,7 +34,7 @@ export async function registerUser(userData) {
 
     if (existingUser.rows.length > 0) {
       throw new Error('User with this email already exists');
-    }
+      }
 
     // Hash password
     const passwordHash = await bcrypt.hash(validated.password, SALT_ROUNDS);
@@ -42,11 +42,11 @@ export async function registerUser(userData) {
     // Create user
     const result = await client.query(
       `INSERT INTO users (
-        email,
+        email, 
         password_hash,
-        first_name,
-        last_name,
-        username,
+        first_name, 
+        last_name, 
+        username, 
         metadata
       ) 
        VALUES ($1, $2, $3, $4, $5, $6) 
@@ -165,15 +165,15 @@ export async function verifyAuth(req) {
       }
 
       const user = result.rows[0];
-      
-      return {
+    
+    return {
         userId: user.id,
         email: user.email,
         firstName: user.first_name,
         lastName: user.last_name,
         username: user.username,
         imageUrl: user.image_url
-      };
+    };
     } finally {
       client.release();
     }
