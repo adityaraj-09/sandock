@@ -21,6 +21,9 @@ import { logger } from './utils/logger.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { ResourceManager } from './services/resourceManager.js';
 import { ContainerOptimizer } from './services/containerOptimizer.js';
+import { ContainerPool } from './services/containerPool.js';
+import { portAllocator } from './services/portAllocator.js';
+import { verifyAgentConnection, verifyClientConnection, WS_CLOSE_CODES } from './services/wsAuth.js';
 
 dotenv.config();
 
@@ -44,13 +47,12 @@ const docker = new Docker();
 // Initialize resource management services
 const resourceManager = new ResourceManager(docker, pool);
 const containerOptimizer = new ContainerOptimizer(docker);
+const containerPool = new ContainerPool(docker, JWT_SECRET);
 
 // Store active WebSocket connections (in-memory for real-time)
 const agentConnections = new Map();
 const clientConnections = new Map();
 const pendingRequests = new Map();
-
-let nextAvailablePort = 30000;
 
 // Routes
 
@@ -116,30 +118,33 @@ app.use(errorHandler);
 // WebSocket server (similar to before but with Redis)
 const wss = new WebSocketServer({ port: WS_PORT });
 
-wss.on('connection', (ws, req) => {
+wss.on('connection', async (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const pathParts = url.pathname.split('/');
-  
+
   if (pathParts[1] === 'agent' && pathParts[2]) {
     // Agent connection
     const sandboxId = pathParts[2];
     const token = url.searchParams.get('token');
-    
-    // Verify JWT token
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      if (decoded.sandboxId !== sandboxId || decoded.type !== 'agent') {
-        throw new Error('Invalid token');
-      }
-    } catch (error) {
-      ws.close(1008, 'Invalid authentication token');
+
+    // Verify agent authentication
+    const authResult = await verifyAgentConnection(sandboxId, token, JWT_SECRET);
+    if (!authResult.valid) {
+      logger.warn(`Agent auth failed for ${sandboxId}: ${authResult.error}`);
+      ws.close(WS_CLOSE_CODES.POLICY_VIOLATION, authResult.error);
       return;
     }
 
     agentConnections.set(sandboxId, ws);
-    setAgentConnection(sandboxId, { connectedAt: new Date().toISOString() }).catch(err => {
+    setAgentConnection(sandboxId, {
+      connectedAt: new Date().toISOString(),
+      userId: authResult.userId,
+      tier: authResult.tier
+    }).catch(err => {
       logger.error('Error storing agent connection in Redis:', err);
     });
+
+    logger.info(`Agent connected: ${sandboxId}`);
 
     ws.on('message', (message) => {
       handleAgentMessage(sandboxId, message);
@@ -157,38 +162,54 @@ wss.on('connection', (ws, req) => {
       logger.error(`WebSocket error for agent ${sandboxId}:`, error);
     });
   } else if (pathParts[1] === 'client' && pathParts[2]) {
-    // Client connection
+    // Client connection with authentication
     const sandboxId = pathParts[2];
-    
+    const apiKey = url.searchParams.get('apiKey') || req.headers['x-api-key'];
+    const token = url.searchParams.get('token');
+
+    // Verify client authentication
+    const authResult = await verifyClientConnection(sandboxId, apiKey, token, JWT_SECRET);
+    if (!authResult.valid) {
+      logger.warn(`Client auth failed for ${sandboxId}: ${authResult.error}`);
+      ws.close(WS_CLOSE_CODES.POLICY_VIOLATION, authResult.error);
+      return;
+    }
+
+    // Store auth info on the websocket for later use
+    ws.authInfo = authResult;
+
     if (!clientConnections.has(sandboxId)) {
       clientConnections.set(sandboxId, new Set());
     }
     clientConnections.get(sandboxId).add(ws);
 
+    logger.info(`Client connected: ${sandboxId} (method: ${authResult.method})`);
+
     ws.on('message', async (message) => {
+      let parsedData = null;
       try {
-        const data = JSON.parse(message.toString());
+        parsedData = JSON.parse(message.toString());
         const agentWs = agentConnections.get(sandboxId);
-        
+
         if (!agentWs || agentWs.readyState !== 1) {
           ws.send(JSON.stringify({
-            id: data.id,
+            id: parsedData.id,
             type: 'error',
             error: 'Agent not connected'
           }));
           return;
         }
 
-        agentWs.send(JSON.stringify(data));
-        
+        agentWs.send(JSON.stringify(parsedData));
+
         if (!pendingRequests.has(sandboxId)) {
           pendingRequests.set(sandboxId, new Map());
         }
-        pendingRequests.get(sandboxId).set(data.id, ws);
+        pendingRequests.get(sandboxId).set(parsedData.id, ws);
       } catch (error) {
         logger.error('Error handling client message:', error);
         ws.send(JSON.stringify({
-          id: data?.id,
+          id: parsedData?.id || null,
           type: 'error',
           error: error.message
         }));
@@ -201,11 +222,12 @@ wss.on('connection', (ws, req) => {
       }
     });
 
-    logger.info(`Client connected: ${sandboxId}`);
-    
     ws.on('error', (error) => {
       logger.error(`WebSocket error for client ${sandboxId}:`, error);
     });
+  } else {
+    // Unknown path
+    ws.close(WS_CLOSE_CODES.UNSUPPORTED, 'Invalid WebSocket path');
   }
 });
 
@@ -252,12 +274,22 @@ async function startServer() {
     logger.info('Optimizing container images...');
     await containerOptimizer.prePullImages([AGENT_IMAGE]);
     console.log('✓ Images optimized');
-    
+
+    // Initialize port allocator
+    console.log('Initializing port allocator...');
+    await portAllocator.initialize();
+    console.log('✓ Port allocator initialized');
+
+    // Initialize container pool (if enabled)
+    console.log('Initializing container pool...');
+    await containerPool.initialize();
+    console.log('✓ Container pool initialized');
+
     // Start resource monitoring
     console.log('Starting resource management services...');
     resourceManager.startMonitoring();
     containerOptimizer.startOptimizationTasks();
-    
+
     logger.info('Resource management services started');
     console.log('✓ Resource management services started');
 
@@ -285,7 +317,7 @@ startServer();
 // Graceful shutdown
 async function gracefulShutdown(signal) {
   logger.info(`${signal} received, shutting down gracefully...`);
-  
+
   try {
     // Close WebSocket connections
     agentConnections.forEach((ws) => {
@@ -304,17 +336,21 @@ async function gracefulShutdown(signal) {
         }
       });
     });
-    
+
+    // Shutdown container pool
+    await containerPool.shutdown();
+    logger.info('Container pool shutdown');
+
     // Close Redis connection
     if (redisClient.isReady) {
       await redisClient.quit();
       logger.info('Redis connection closed');
     }
-    
+
     // Close database connection
     await pool.end();
     logger.info('PostgreSQL connection closed');
-    
+
     process.exit(0);
   } catch (error) {
     logger.error('Error during shutdown:', error);

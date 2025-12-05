@@ -7,7 +7,17 @@ import { strictLimiter } from '../middleware/security.js';
 import { logger } from '../utils/logger.js';
 import { ResourceManager } from '../services/resourceManager.js';
 import { ContainerOptimizer } from '../services/containerOptimizer.js';
+import { portAllocator } from '../services/portAllocator.js';
 import { RESOURCE_LIMITS } from '../config/limits.js';
+import {
+  getImageForLanguage,
+  getLanguageConfig,
+  isLanguageSupported,
+  normalizeLanguage
+} from '../config/images.js';
+
+// Volume name prefix for persistent data
+const VOLUME_PREFIX = 'sandbox-data-';
 
 // Router factory - takes dependencies
 export default function createSandboxesRouter(dependencies) {
@@ -29,13 +39,57 @@ export default function createSandboxesRouter(dependencies) {
   } = dependencies;
 
   const router = express.Router();
-  
+
   // Initialize resource management services
   const resourceManager = new ResourceManager(docker, pool);
   const containerOptimizer = new ContainerOptimizer(docker);
 
-  // Shared port counter (could be moved to Redis for multi-instance)
-  let nextAvailablePort = 30000;
+  /**
+   * Create or get a data volume for persistent storage
+   * @param {string} sandboxId - Sandbox ID
+   * @returns {Promise<string>} Volume name
+   */
+  async function ensureDataVolume(sandboxId) {
+    const volumeName = `${VOLUME_PREFIX}${sandboxId}`;
+    try {
+      // Check if volume exists
+      const volume = docker.getVolume(volumeName);
+      await volume.inspect();
+      logger.debug(`Volume ${volumeName} already exists`);
+    } catch (error) {
+      if (error.statusCode === 404) {
+        // Create the volume
+        await docker.createVolume({
+          Name: volumeName,
+          Labels: {
+            'insien.sandbox.id': sandboxId,
+            'insien.sandbox.created': new Date().toISOString()
+          }
+        });
+        logger.info(`Created data volume: ${volumeName}`);
+      } else {
+        throw error;
+      }
+    }
+    return volumeName;
+  }
+
+  /**
+   * Remove a data volume
+   * @param {string} sandboxId - Sandbox ID
+   */
+  async function removeDataVolume(sandboxId) {
+    const volumeName = `${VOLUME_PREFIX}${sandboxId}`;
+    try {
+      const volume = docker.getVolume(volumeName);
+      await volume.remove();
+      logger.info(`Removed data volume: ${volumeName}`);
+    } catch (error) {
+      if (error.statusCode !== 404) {
+        logger.error(`Error removing volume ${volumeName}:`, error);
+      }
+    }
+  }
 
   router.post('/create', authenticateApiKey(), strictLimiter, async (req, res) => {
     const startTime = Date.now();
@@ -246,12 +300,18 @@ export default function createSandboxesRouter(dependencies) {
         logger.error('Error removing container:', err);
       }
 
-      // Clean up port mappings
+      // Clean up port mappings using Redis allocator
+      await portAllocator.releaseAllPorts(id);
+
+      // Also clean up legacy port mappings if any
       if (metadata.exposedPorts) {
         for (const hostPort of Object.values(metadata.exposedPorts)) {
           await deletePortMapping(hostPort);
         }
       }
+
+      // Remove data volume
+      await removeDataVolume(id);
 
       // Update database
       await pool.query(
@@ -355,12 +415,11 @@ export default function createSandboxesRouter(dependencies) {
         });
       }
 
-      // Find available host port
-      let hostPort = nextAvailablePort;
-      while (await getPortMapping(hostPort)) {
-        hostPort++;
-      }
-      nextAvailablePort = hostPort + 1;
+      // Allocate port using Redis-based allocator
+      const hostPort = await portAllocator.allocatePort(id, containerPort);
+
+      // Ensure data volume exists for persistence
+      const volumeName = await ensureDataVolume(id);
 
       // Get container and recreate with port mapping
       const container = docker.getContainer(metadata.containerId);
@@ -435,8 +494,10 @@ export default function createSandboxesRouter(dependencies) {
       const originalHostConfig = containerInfo.HostConfig || {};
       const hostConfig = {
         NetworkMode: originalHostConfig.NetworkMode || 'bridge',
-        AutoRemove: false, // Changed to false to match original config
+        AutoRemove: false,
         PortBindings: portBindings,
+        // Add data volume for persistence
+        Binds: [`${volumeName}:/app/data:rw`],
         // Preserve original resource limits
         Memory: originalHostConfig.Memory,
         MemorySwap: originalHostConfig.MemorySwap,
@@ -446,7 +507,7 @@ export default function createSandboxesRouter(dependencies) {
         CpuQuota: originalHostConfig.CpuQuota,
         // Preserve security settings
         SecurityOpt: originalHostConfig.SecurityOpt,
-        ReadonlyRootfs: false, // Keep writable
+        ReadonlyRootfs: false,
         Ulimits: originalHostConfig.Ulimits,
         Tmpfs: originalHostConfig.Tmpfs,
         Privileged: originalHostConfig.Privileged || false,
@@ -693,8 +754,12 @@ export default function createSandboxesRouter(dependencies) {
   });
 
   router.post('/execute', authenticateApiKey(), strictLimiter, async (req, res) => {
+    let sandboxId = null;
+    let container = null;
+    let ws = null;
+
     try {
-      const { code, language, timeout, input } = req.body;
+      const { code, language, timeout: execTimeoutMs, input } = req.body;
       const userId = req.user.userId;
       const apiKeyId = req.user.apiKeyId;
 
@@ -702,10 +767,25 @@ export default function createSandboxesRouter(dependencies) {
         return res.status(400).json({ error: 'code and language are required' });
       }
 
-      const sandboxId = uuidv4();
+      // Normalize and validate language
+      const normalizedLang = normalizeLanguage(language);
+      if (!isLanguageSupported(normalizedLang)) {
+        return res.status(400).json({
+          error: `Unsupported language: ${language}`,
+          supportedLanguages: ['javascript', 'python', 'java', 'cpp', 'c', 'go', 'rust']
+        });
+      }
+
+      // Get language-specific configuration
+      const langConfig = getLanguageConfig(normalizedLang);
+      if (!langConfig) {
+        return res.status(400).json({ error: `No configuration found for language: ${language}` });
+      }
+
+      sandboxId = uuidv4();
       const userTier = req.body.tier || 'free';
 
-      logger.info(`[CODE_EXECUTE:${sandboxId}] Executing ${language} code for user ${userId}`);
+      logger.info(`[CODE_EXECUTE:${sandboxId}] Executing ${normalizedLang} code for user ${userId}`);
 
       const canCreate = await resourceManager.canCreateSandbox(userId, apiKeyId, userTier);
       if (!canCreate.allowed) {
@@ -721,20 +801,29 @@ export default function createSandboxesRouter(dependencies) {
         { expiresIn: '1h' }
       );
 
+      // Get language-specific Docker image
+      const languageImage = getImageForLanguage(normalizedLang);
+      logger.info(`[CODE_EXECUTE:${sandboxId}] Using image: ${languageImage} for ${normalizedLang}`);
+
       let containerConfig = resourceManager.getContainerConfig(sandboxId, agentToken, userTier);
-      containerConfig.Image = AGENT_IMAGE;
+      containerConfig.Image = languageImage;
 
       if (ORCHESTRATOR_HOST === 'host.docker.internal') {
         containerConfig.HostConfig.ExtraHosts = ['host.docker.internal:host-gateway'];
       }
 
-      const container = await docker.createContainer(containerConfig);
+      container = await docker.createContainer(containerConfig);
       await container.start();
 
       await pool.query(
         `INSERT INTO sandboxes (id, user_id, api_key_id, status, metadata)
          VALUES ($1, $2, $3, 'active', $4)`,
-        [sandboxId, userId, apiKeyId, JSON.stringify({ containerId: container.id, execution: true })]
+        [sandboxId, userId, apiKeyId, JSON.stringify({
+          containerId: container.id,
+          execution: true,
+          language: normalizedLang,
+          image: languageImage
+        })]
       );
 
       await setSandboxMetadata(sandboxId, {
@@ -743,41 +832,29 @@ export default function createSandboxesRouter(dependencies) {
         containerId: container.id,
         createdAt: new Date().toISOString(),
         tier: userTier,
-        execution: true
+        execution: true,
+        language: normalizedLang,
+        image: languageImage,
+        allowUnauthenticated: true // Allow internal WS connection
       });
 
+      // Wait for agent to start
       await new Promise(resolve => setTimeout(resolve, 2000));
 
-      const ws = new WebSocket(`${process.env.WS_URL || 'ws://localhost:3001'}/client/${sandboxId}`);
-      
+      // Connect to WebSocket (internal connection, no auth needed)
+      ws = new WebSocket(`${process.env.WS_URL || 'ws://localhost:3001'}/client/${sandboxId}`);
+
       await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('WebSocket connection timeout')), 10000);
+        const connectionTimeout = setTimeout(() => reject(new Error('WebSocket connection timeout')), 10000);
         ws.on('open', () => {
-          clearTimeout(timeout);
+          clearTimeout(connectionTimeout);
           resolve();
         });
         ws.on('error', reject);
       });
 
-      const SUPPORTED_LANGUAGES = {
-        javascript: { extension: 'js', command: 'node', args: [] },
-        python: { extension: 'py', command: 'python3', args: [] },
-        java: { extension: 'java', command: 'javac', runCommand: 'java' },
-        cpp: { extension: 'cpp', command: 'g++', args: ['-o', 'main', '-std=c++17'], runCommand: './main' },
-        go: { extension: 'go', command: 'go', args: ['run'] },
-        rust: { extension: 'rs', command: 'rustc', args: ['-o', 'main'], runCommand: './main' }
-      };
-
-      const langConfig = SUPPORTED_LANGUAGES[language.toLowerCase()];
-      if (!langConfig) {
-        await container.stop();
-        await container.remove();
-        await cleanupSandbox(sandboxId);
-        return res.status(400).json({ error: `Unsupported language: ${language}` });
-      }
-
       const fileName = `main.${langConfig.extension}`;
-      const execTimeout = timeout || 5000;
+      const execTimeout = execTimeoutMs || 30000;
 
       const writeFile = (path, content) => {
         return new Promise((resolve, reject) => {
@@ -830,34 +907,31 @@ export default function createSandboxesRouter(dependencies) {
       let result;
       let compileResult = null;
 
-      if (langConfig.runCommand) {
+      // Handle compiled languages
+      if (langConfig.compile) {
         if (langConfig.command === 'javac') {
+          // Java compilation
           compileResult = await runCommand(langConfig.command, [fileName]);
           if (compileResult.exitCode !== 0) {
-            await container.stop();
-            await container.remove();
-            await cleanupSandbox(sandboxId);
-            ws.close();
             return res.json({
               success: false,
               error: 'Compilation failed',
+              language: normalizedLang,
               stdout: compileResult.stdout,
               stderr: compileResult.stderr,
               exitCode: compileResult.exitCode
             });
           }
           const className = fileName.replace('.java', '');
-          result = await runCommand(langConfig.runCommand, [className]);
+          result = await runCommand(langConfig.runCommand, [...(langConfig.runArgs || []), className]);
         } else {
+          // C++, Rust compilation
           compileResult = await runCommand(langConfig.command, [...langConfig.args, fileName]);
           if (compileResult.exitCode !== 0) {
-            await container.stop();
-            await container.remove();
-            await cleanupSandbox(sandboxId);
-            ws.close();
             return res.json({
               success: false,
               error: 'Compilation failed',
+              language: normalizedLang,
               stdout: compileResult.stdout,
               stderr: compileResult.stderr,
               exitCode: compileResult.exitCode
@@ -866,16 +940,13 @@ export default function createSandboxesRouter(dependencies) {
           result = await runCommand('sh', ['-c', langConfig.runCommand]);
         }
       } else {
+        // Interpreted languages (JavaScript, Python, Go)
         result = await runCommand(langConfig.command, [...langConfig.args, fileName]);
       }
 
-      await container.stop();
-      await container.remove();
-      await cleanupSandbox(sandboxId);
-      ws.close();
-
       res.json({
         success: result.exitCode === 0,
+        language: normalizedLang,
         stdout: result.stdout,
         stderr: result.stderr,
         exitCode: result.exitCode,
@@ -886,8 +957,28 @@ export default function createSandboxesRouter(dependencies) {
         } : null
       });
     } catch (error) {
-      logger.error('Error executing code:', error);
+      logger.error(`[CODE_EXECUTE:${sandboxId || 'unknown'}] Error:`, error);
       res.status(500).json({ error: error.message });
+    } finally {
+      // Cleanup resources
+      try {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
+        if (container) {
+          await container.stop().catch(() => {});
+          await container.remove().catch(() => {});
+        }
+        if (sandboxId) {
+          await cleanupSandbox(sandboxId);
+          await pool.query(
+            'UPDATE sandboxes SET status = $1, destroyed_at = CURRENT_TIMESTAMP WHERE id = $2',
+            ['destroyed', sandboxId]
+          );
+        }
+      } catch (cleanupError) {
+        logger.error(`[CODE_EXECUTE:${sandboxId}] Cleanup error:`, cleanupError);
+      }
     }
   });
 

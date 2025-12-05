@@ -1,0 +1,51 @@
+# Python Sandbox Agent
+# Optimized image for Python execution
+
+FROM python:3.11-slim AS python-base
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+FROM node:20-slim AS node-builder
+
+WORKDIR /app
+COPY sandbox-agent/package*.json ./
+RUN npm ci --only=production && npm cache clean --force
+
+FROM python-base
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    dumb-init \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -g 1001 sandbox && \
+    useradd -u 1001 -g sandbox -m sandbox
+
+WORKDIR /app
+
+COPY --from=node-builder /app/node_modules ./node_modules
+COPY sandbox-agent/package.json ./
+COPY sandbox-agent/src ./src
+
+RUN pip install --no-cache-dir numpy pandas requests && pip cache purge
+
+RUN mkdir -p /app/data && chown -R sandbox:sandbox /app
+
+ENV NODE_ENV=production
+ENV SANDBOX_LANGUAGE=python
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD node -e "console.log('healthy')" || exit 1
+
+LABEL maintainer="Insien <dev@insien.com>" \
+      version="1.0.0" \
+      description="Python Sandbox Agent"
+
+USER sandbox
+
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "src/index.js"]
