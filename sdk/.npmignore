@@ -1,0 +1,32 @@
+# Source files
+src/
+
+# TypeScript configs
+tsconfig*.json
+
+# Development files
+.eslintrc*
+.prettierrc*
+.editorconfig
+
+# Test files
+__tests__/
+*.test.ts
+*.spec.ts
+coverage/
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+*.log
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Node
+node_modules/

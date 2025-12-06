@@ -1,18 +1,71 @@
 {
-  "name": "@insien/sandbox",
-  "version": "1.0.0",
-  "description": "JavaScript SDK for Insien Sandbox",
-  "main": "src/index.js",
-  "type": "module",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "name": "@insien/sandock",
+  "version": "0.1.0",
+  "description": "SDK for Insien Sandbox - Execute code in isolated sandbox environments",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/types/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/types/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    }
   },
-  "keywords": ["sandbox", "sdk"],
-  "author": "",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "npm run build:esm && npm run build:cjs && npm run build:types && npm run build:fixup",
+    "build:esm": "tsc -p tsconfig.esm.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "build:types": "tsc -p tsconfig.types.json",
+    "build:fixup": "echo '{\"type\":\"module\"}' > dist/esm/package.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "sandbox",
+    "sdk",
+    "code-execution",
+    "isolated",
+    "docker",
+    "container",
+    "runtime"
+  ],
+  "author": "Insien",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/adityaraj-09/sandock"
+  },
+  "bugs": {
+    "url": "https://github.com/adityaraj-09/sandock/issues"
+  },
+  "homepage": "https://github.com/adityaraj-09/sandock#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
-    "ws": "^8.14.2",
-    "uuid": "^9.0.1"
-  }
+    "uuid": "^9.0.1",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/uuid": "^9.0.7",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.3.2"
+  },
+  "peerDependencies": {},
+  "sideEffects": false
 }
-

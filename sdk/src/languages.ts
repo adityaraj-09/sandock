@@ -1,4 +1,6 @@
-export const SUPPORTED_LANGUAGES = {
+import type { LanguageConfig, SupportedLanguage } from './types.js';
+
+export const SUPPORTED_LANGUAGES: Record<SupportedLanguage, LanguageConfig> = {
   javascript: {
     name: 'JavaScript',
     extension: 'js',
@@ -60,16 +62,21 @@ export const SUPPORTED_LANGUAGES = {
   }
 };
 
-export function getLanguageConfig(language) {
-  const lang = language.toLowerCase();
+export function getLanguageConfig(language: string): LanguageConfig {
+  const lang = language.toLowerCase() as SupportedLanguage;
   if (!SUPPORTED_LANGUAGES[lang]) {
-    throw new Error(`Unsupported language: ${language}. Supported: ${Object.keys(SUPPORTED_LANGUAGES).join(', ')}`);
+    throw new Error(
+      `Unsupported language: ${language}. Supported: ${Object.keys(SUPPORTED_LANGUAGES).join(', ')}`
+    );
   }
   return SUPPORTED_LANGUAGES[lang];
 }
 
-export function getFileName(language, defaultName = 'main') {
+export function getFileName(language: string, defaultName = 'main'): string {
   const config = getLanguageConfig(language);
   return `${defaultName}.${config.extension}`;
 }
 
+export function getSupportedLanguages(): SupportedLanguage[] {
+  return Object.keys(SUPPORTED_LANGUAGES) as SupportedLanguage[];
+}

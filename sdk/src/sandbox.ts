@@ -1,23 +1,46 @@
 import WebSocket from 'ws';
 import { v4 as uuidv4 } from 'uuid';
 import { getLanguageConfig, getFileName, SUPPORTED_LANGUAGES } from './languages.js';
+import type {
+  SandboxOptions,
+  CreateResponse,
+  CommandResult,
+  CommandOptions,
+  WriteFileResult,
+  WriteFilesResult,
+  ReadFileResult,
+  FileInput,
+  ExposePortResult,
+  GetPortsResult,
+  RunCodeOptions,
+  RunCodeResult,
+  SupportedLanguage,
+  RPCMessage,
+  RPCResponse,
+  PendingRequest
+} from './types.js';
 
 export class Sandbox {
-  constructor(options = {}) {
+  private apiKey: string | undefined;
+  private orchestratorUrl: string;
+  private wsUrl: string;
+  private sandboxId: string | null = null;
+  private ws: WebSocket | null = null;
+  private pendingRequests: Map<string, PendingRequest> = new Map();
+  private connected = false;
+  private creating = false;
+
+  constructor(options: SandboxOptions = {}) {
     this.apiKey = options.apiKey || process.env.INSIEN_API_KEY;
-    this.orchestratorUrl = options.orchestratorUrl || process.env.INSIEN_API_URL || 'http://localhost:3000';
+    this.orchestratorUrl =
+      options.orchestratorUrl || process.env.INSIEN_API_URL || 'http://localhost:3000';
     this.wsUrl = options.wsUrl || process.env.INSIEN_WS_URL || 'ws://localhost:3001';
-    this.sandboxId = null;
-    this.ws = null;
-    this.pendingRequests = new Map();
-    this.connected = false;
-    this.creating = false;
   }
 
-  async create() {
+  async create(): Promise<CreateResponse | void> {
     if (this.creating) {
       while (this.creating) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
       return;
     }
@@ -27,7 +50,9 @@ export class Sandbox {
     }
 
     if (!this.apiKey) {
-      throw new Error('API key is required. Set apiKey in options or INSIEN_API_KEY environment variable.');
+      throw new Error(
+        'API key is required. Set apiKey in options or INSIEN_API_KEY environment variable.'
+      );
     }
 
     this.creating = true;
@@ -43,15 +68,17 @@ export class Sandbox {
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({ error: response.statusText }));
-        throw new Error(error.error || `Failed to create sandbox: ${response.statusText}`);
+        throw new Error(
+          (error as { error?: string }).error || `Failed to create sandbox: ${response.statusText}`
+        );
       }
 
-      const data = await response.json();
+      const data = (await response.json()) as { sandboxId: string; agentUrl: string };
       this.sandboxId = data.sandboxId;
-      
+
       await this.waitForAgent(30000);
       await this.connectWebSocket();
-      
+
       this.creating = false;
       return {
         sandboxId: this.sandboxId,
@@ -59,11 +86,11 @@ export class Sandbox {
       };
     } catch (error) {
       this.creating = false;
-      throw new Error(`Failed to create sandbox: ${error.message}`);
+      throw new Error(`Failed to create sandbox: ${(error as Error).message}`);
     }
   }
 
-  async waitForAgent(timeout = 30000) {
+  private async waitForAgent(timeout = 30000): Promise<boolean> {
     const startTime = Date.now();
     const checkInterval = 500;
     let attempts = 0;
@@ -73,27 +100,27 @@ export class Sandbox {
       try {
         const response = await fetch(`${this.orchestratorUrl}/sandbox/${this.sandboxId}/status`, {
           headers: {
-            'X-API-Key': this.apiKey
+            'X-API-Key': this.apiKey!
           }
         });
 
         if (response.ok) {
-          const status = await response.json();
+          const status = (await response.json()) as { connected: boolean };
           if (status.connected) {
             return true;
           }
         }
-      } catch (error) {
+      } catch {
         // Continue waiting
       }
 
-      await new Promise(resolve => setTimeout(resolve, checkInterval));
+      await new Promise((resolve) => setTimeout(resolve, checkInterval));
     }
 
     throw new Error(`Timeout waiting for agent to connect after ${attempts} attempts (${timeout}ms)`);
   }
 
-  connectWebSocket() {
+  private connectWebSocket(): Promise<void> {
     return new Promise((resolve, reject) => {
       const wsUrl = `${this.wsUrl}/client/${this.sandboxId}`;
       this.ws = new WebSocket(wsUrl);
@@ -103,16 +130,16 @@ export class Sandbox {
         resolve();
       });
 
-      this.ws.on('message', (message) => {
+      this.ws.on('message', (message: WebSocket.Data) => {
         try {
-          const data = JSON.parse(message.toString());
+          const data = JSON.parse(message.toString()) as RPCResponse;
           this.handleResponse(data);
         } catch (error) {
           console.error('Error parsing WebSocket message:', error);
         }
       });
 
-      this.ws.on('error', (error) => {
+      this.ws.on('error', (error: Error) => {
         console.error('WebSocket error:', error);
         if (!this.connected) {
           reject(error);
@@ -123,7 +150,6 @@ export class Sandbox {
         this.connected = false;
       });
 
-      // Timeout after 10 seconds
       setTimeout(() => {
         if (!this.connected) {
           reject(new Error('WebSocket connection timeout'));
@@ -132,11 +158,11 @@ export class Sandbox {
     });
   }
 
-  handleResponse(data) {
-    const { id, type, error } = data;
-    
+  private handleResponse(data: RPCResponse): void {
+    const { id, error } = data;
+
     if (this.pendingRequests.has(id)) {
-      const { resolve, reject } = this.pendingRequests.get(id);
+      const { resolve, reject } = this.pendingRequests.get(id)!;
       this.pendingRequests.delete(id);
 
       if (error) {
@@ -147,26 +173,31 @@ export class Sandbox {
     }
   }
 
-  async ensureConnected() {
+  private async ensureConnected(): Promise<void> {
     if (!this.connected || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
       if (!this.sandboxId) {
         await this.create();
       } else {
-        // Try to reconnect WebSocket
         try {
           await this.connectWebSocket();
-        } catch (error) {
-          throw new Error('Not connected to sandbox. Agent may be reconnecting. Please try again in a moment.');
+        } catch {
+          throw new Error(
+            'Not connected to sandbox. Agent may be reconnecting. Please try again in a moment.'
+          );
         }
       }
     }
   }
 
-  async sendRPC(type, payload, timeout = 30000) {
+  private async sendRPC(
+    type: string,
+    payload: Record<string, unknown>,
+    timeout = 30000
+  ): Promise<RPCResponse> {
     await this.ensureConnected();
 
     const id = uuidv4();
-    const message = {
+    const message: RPCMessage = {
       id,
       type,
       ...payload
@@ -176,13 +207,12 @@ export class Sandbox {
       this.pendingRequests.set(id, { resolve, reject });
 
       try {
-        this.ws.send(JSON.stringify(message));
+        this.ws!.send(JSON.stringify(message));
       } catch (error) {
         this.pendingRequests.delete(id);
         reject(error);
       }
 
-      // Configurable timeout (default 30 seconds, longer for commands like npm install)
       setTimeout(() => {
         if (this.pendingRequests.has(id)) {
           this.pendingRequests.delete(id);
@@ -192,43 +222,66 @@ export class Sandbox {
     });
   }
 
-  async runCommand(cmd, args = [], options = {}) {
-    // Support both: runCommand('node', ['--version']) and runCommand({ cmd: 'node', args: ['--version'] })
-    if (typeof cmd === 'object' && cmd !== null && !Array.isArray(cmd)) {
-      options = cmd.options || {};
-      args = cmd.args || [];
-      cmd = cmd.cmd;
+  async runCommand(cmd: string, args?: string[], options?: CommandOptions): Promise<CommandResult>;
+  async runCommand(options: { cmd: string; args?: string[]; options?: CommandOptions }): Promise<CommandResult>;
+  async runCommand(
+    cmdOrOptions: string | { cmd: string; args?: string[]; options?: CommandOptions },
+    argsParam?: string[],
+    optionsParam?: CommandOptions
+  ): Promise<CommandResult> {
+    let cmd: string;
+    let args: string[];
+    let options: CommandOptions;
+
+    if (typeof cmdOrOptions === 'object' && cmdOrOptions !== null) {
+      cmd = cmdOrOptions.cmd;
+      args = cmdOrOptions.args || [];
+      options = cmdOrOptions.options || {};
+    } else {
+      cmd = cmdOrOptions;
+      args = argsParam || [];
+      options = optionsParam || {};
     }
-    
+
     if (!cmd) {
       throw new Error('cmd is required');
     }
 
     const background = options.background || false;
     const timeout = options.timeout || (cmd === 'npm' && args[0] === 'install' ? 300000 : 30000);
-    
+
     const response = await this.sendRPC('exec', { cmd, args, background }, timeout);
-    
+
     if (response.type === 'execResponse') {
       return {
-        stdout: response.stdout,
-        stderr: response.stderr,
-        exitCode: response.exitCode,
-        pid: response.pid,
-        background: response.background
+        stdout: response.stdout as string,
+        stderr: response.stderr as string,
+        exitCode: response.exitCode as number,
+        pid: response.pid as number | undefined,
+        background: response.background as boolean | undefined
       };
     }
 
     throw new Error(`Unexpected response type: ${response.type}`);
   }
 
-  async writeFile(path, content) {
-    // Support both: writeFile('file.js', 'content') and writeFile({ path: 'file.js', content: 'content' })
-    if (typeof path === 'object' && path !== null) {
-      content = path.content;
-      path = path.path;
+  async writeFile(path: string, content: string): Promise<WriteFileResult>;
+  async writeFile(options: { path: string; content: string }): Promise<WriteFileResult>;
+  async writeFile(
+    pathOrOptions: string | { path: string; content: string },
+    contentParam?: string
+  ): Promise<WriteFileResult> {
+    let path: string;
+    let content: string;
+
+    if (typeof pathOrOptions === 'object' && pathOrOptions !== null) {
+      path = pathOrOptions.path;
+      content = pathOrOptions.content;
+    } else {
+      path = pathOrOptions;
+      content = contentParam!;
     }
-    
+
     if (!path) {
       throw new Error('path is required');
     }
@@ -237,28 +290,27 @@ export class Sandbox {
     }
 
     const response = await this.sendRPC('write', { path, content });
-    
+
     if (response.type === 'writeResponse') {
       return {
-        success: response.success,
-        path: response.path
+        success: response.success as boolean,
+        path: response.path as string
       };
     }
 
     throw new Error(`Unexpected response type: ${response.type}`);
   }
 
-  async writeFiles(files) {
-    // Support multiple formats:
-    // writeFiles([{ path: 'file1.js', content: '...' }, { path: 'file2.js', content: '...' }])
-    // writeFiles({ 'file1.js': 'content1', 'file2.js': 'content2' })
-    
-    let fileArray = [];
-    
+  async writeFiles(files: FileInput[]): Promise<WriteFilesResult>;
+  async writeFiles(files: Record<string, string | object>): Promise<WriteFilesResult>;
+  async writeFiles(
+    files: FileInput[] | Record<string, string | object>
+  ): Promise<WriteFilesResult> {
+    let fileArray: FileInput[];
+
     if (Array.isArray(files)) {
       fileArray = files;
     } else if (typeof files === 'object' && files !== null) {
-      // Convert object to array format
       fileArray = Object.entries(files).map(([path, content]) => ({
         path,
         content: typeof content === 'string' ? content : JSON.stringify(content, null, 2)
@@ -271,9 +323,8 @@ export class Sandbox {
       throw new Error('At least one file is required');
     }
 
-    // Write all files in parallel
     const results = await Promise.all(
-      fileArray.map(file => {
+      fileArray.map((file) => {
         const { path, content } = file;
         if (!path) {
           throw new Error('path is required for each file');
@@ -292,24 +343,24 @@ export class Sandbox {
     };
   }
 
-  async getFile(path) {
+  async getFile(path: string): Promise<ReadFileResult> {
     if (!path) {
       throw new Error('path is required');
     }
 
     const response = await this.sendRPC('read', { path });
-    
+
     if (response.type === 'readResponse') {
       return {
-        content: response.content,
-        path: response.path
+        content: response.content as string,
+        path: response.path as string
       };
     }
 
     throw new Error(`Unexpected response type: ${response.type}`);
   }
 
-  async exposePort(containerPort) {
+  async exposePort(containerPort: number): Promise<ExposePortResult> {
     if (!this.sandboxId) {
       throw new Error('Sandbox not created. Call create() first.');
     }
@@ -323,23 +374,23 @@ export class Sandbox {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-API-Key': this.apiKey
+          'X-API-Key': this.apiKey!
         },
-        body: JSON.stringify({ containerPort: parseInt(containerPort) })
+        body: JSON.stringify({ containerPort: parseInt(String(containerPort)) })
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = (await response.json()) as { error?: string };
         throw new Error(error.error || `Failed to expose port: ${response.statusText}`);
       }
 
-      return await response.json();
+      return (await response.json()) as ExposePortResult;
     } catch (error) {
-      throw new Error(`Failed to expose port: ${error.message}`);
+      throw new Error(`Failed to expose port: ${(error as Error).message}`);
     }
   }
 
-  async getExposedPorts() {
+  async getExposedPorts(): Promise<GetPortsResult> {
     if (!this.sandboxId) {
       throw new Error('Sandbox not created. Call create() first.');
     }
@@ -347,22 +398,22 @@ export class Sandbox {
     try {
       const response = await fetch(`${this.orchestratorUrl}/sandbox/${this.sandboxId}/ports`, {
         headers: {
-          'X-API-Key': this.apiKey
+          'X-API-Key': this.apiKey!
         }
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = (await response.json()) as { error?: string };
         throw new Error(error.error || `Failed to get ports: ${response.statusText}`);
       }
 
-      return await response.json();
+      return (await response.json()) as GetPortsResult;
     } catch (error) {
-      throw new Error(`Failed to get ports: ${error.message}`);
+      throw new Error(`Failed to get ports: ${(error as Error).message}`);
     }
   }
 
-  async disconnect() {
+  async disconnect(): Promise<void> {
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -371,7 +422,7 @@ export class Sandbox {
     this.pendingRequests.clear();
   }
 
-  async destroy() {
+  async destroy(): Promise<{ success: boolean } | void> {
     if (!this.sandboxId) {
       return;
     }
@@ -383,30 +434,28 @@ export class Sandbox {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-API-Key': this.apiKey
+          'X-API-Key': this.apiKey!
         }
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = (await response.json()) as { error?: string };
         throw new Error(error.error || `Failed to destroy sandbox: ${response.statusText}`);
       }
 
       this.sandboxId = null;
       return { success: true };
     } catch (error) {
-      throw new Error(`Failed to destroy sandbox: ${error.message}`);
+      throw new Error(`Failed to destroy sandbox: ${(error as Error).message}`);
     }
   }
 
-  async runCode(code, language, options = {}) {
-    const {
-      fileName,
-      timeout,
-      autoDestroy = true,
-      input = '',
-      args = []
-    } = options;
+  async runCode(
+    code: string,
+    language: string,
+    options: RunCodeOptions = {}
+  ): Promise<RunCodeResult> {
+    const { fileName, timeout, autoDestroy = true, input = '', args = [] } = options;
 
     const langConfig = getLanguageConfig(language);
     const file = fileName || getFileName(language);
@@ -418,15 +467,17 @@ export class Sandbox {
 
     await this.writeFile(file, code);
 
-    let result;
-    let compileResult = null;
+    let result: CommandResult;
+    let compileResult: CommandResult | null = null;
 
     try {
       if (langConfig.runCommand) {
         if (langConfig.command === 'javac') {
-          compileResult = await this.runCommand(langConfig.command, [file], { timeout: execTimeout });
+          compileResult = await this.runCommand(langConfig.command, [file], {
+            timeout: execTimeout
+          });
           if (compileResult.exitCode !== 0) {
-            const response = {
+            const response: RunCodeResult = {
               success: false,
               error: 'Compilation failed',
               stdout: compileResult.stdout,
@@ -439,11 +490,15 @@ export class Sandbox {
             return response;
           }
           const className = file.replace('.java', '');
-          result = await this.runCommand(langConfig.runCommand, [className, ...args], { timeout: execTimeout });
+          result = await this.runCommand(langConfig.runCommand, [className, ...args], {
+            timeout: execTimeout
+          });
         } else {
-          compileResult = await this.runCommand(langConfig.command, [...langConfig.args, file], { timeout: execTimeout });
+          compileResult = await this.runCommand(langConfig.command, [...langConfig.args, file], {
+            timeout: execTimeout
+          });
           if (compileResult.exitCode !== 0) {
-            const response = {
+            const response: RunCodeResult = {
               success: false,
               error: 'Compilation failed',
               stdout: compileResult.stdout,
@@ -455,7 +510,9 @@ export class Sandbox {
             if (autoDestroy) await this.destroy();
             return response;
           }
-          result = await this.runCommand('sh', ['-c', langConfig.runCommand], { timeout: execTimeout });
+          result = await this.runCommand('sh', ['-c', langConfig.runCommand], {
+            timeout: execTimeout
+          });
         }
       } else {
         const cmdArgs = [...langConfig.args, file, ...args];
@@ -463,14 +520,14 @@ export class Sandbox {
       }
 
       if (input) {
-        const inputCmd = langConfig.runCommand 
+        const inputCmd = langConfig.runCommand
           ? `echo "${input}" | ${langConfig.runCommand}`
           : `echo "${input}" | ${langConfig.command} ${file}`;
         const inputResult = await this.runCommand('sh', ['-c', inputCmd], { timeout: execTimeout });
         result = inputResult;
       }
 
-      const response = {
+      const response: RunCodeResult = {
         success: result.exitCode === 0,
         stdout: result.stdout,
         stderr: result.stderr,
@@ -494,16 +551,16 @@ export class Sandbox {
 
       return response;
     } catch (error) {
-      const response = {
+      const response: RunCodeResult = {
         success: false,
-        error: error.message,
+        error: (error as Error).message,
         language,
         fileName: file
       };
       if (autoDestroy) {
         try {
           await this.destroy();
-        } catch (destroyError) {
+        } catch {
           // Ignore destroy errors
         }
       }
@@ -511,8 +568,15 @@ export class Sandbox {
     }
   }
 
-  static getSupportedLanguages() {
-    return Object.keys(SUPPORTED_LANGUAGES);
+  static getSupportedLanguages(): SupportedLanguage[] {
+    return Object.keys(SUPPORTED_LANGUAGES) as SupportedLanguage[];
+  }
+
+  getSandboxId(): string | null {
+    return this.sandboxId;
+  }
+
+  isConnected(): boolean {
+    return this.connected;
   }
 }
-
