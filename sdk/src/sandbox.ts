@@ -17,7 +17,18 @@ import type {
   SupportedLanguage,
   RPCMessage,
   RPCResponse,
-  PendingRequest
+  PendingRequest,
+  GitCloneOptions,
+  GitCloneResult,
+  GitPullResult,
+  GitCheckoutResult,
+  PackageInstallOptions,
+  PackageInstallResult,
+  PackageListResult,
+  PackageManager,
+  TemplateInfo,
+  Template,
+  CreateFromTemplateResult
 } from './types.js';
 
 export class Sandbox {
@@ -566,6 +577,192 @@ export class Sandbox {
       }
       return response;
     }
+  }
+
+  async createFromTemplate(templateId: string, tier?: string): Promise<CreateFromTemplateResult> {
+    if (!this.apiKey) {
+      throw new Error('API key is required');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/sandbox/create-from-template`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey
+      },
+      body: JSON.stringify({ templateId, tier: tier || 'free' })
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to create sandbox from template: ${response.statusText}`);
+    }
+
+    const data = (await response.json()) as CreateFromTemplateResult;
+    this.sandboxId = data.sandboxId;
+    await this.connectWebSocket();
+
+    return data;
+  }
+
+  async gitClone(options: GitCloneOptions): Promise<GitCloneResult> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/sandbox/${this.sandboxId}/git/clone`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey!
+      },
+      body: JSON.stringify(options)
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to clone repository: ${response.statusText}`);
+    }
+
+    return (await response.json()) as GitCloneResult;
+  }
+
+  async gitPull(directory?: string): Promise<GitPullResult> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/sandbox/${this.sandboxId}/git/pull`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey!
+      },
+      body: JSON.stringify({ directory: directory || '/app' })
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to pull repository: ${response.statusText}`);
+    }
+
+    return (await response.json()) as GitPullResult;
+  }
+
+  async gitCheckout(branch: string, directory?: string): Promise<GitCheckoutResult> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/sandbox/${this.sandboxId}/git/checkout`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey!
+      },
+      body: JSON.stringify({ branch, directory: directory || '/app' })
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to checkout branch: ${response.statusText}`);
+    }
+
+    return (await response.json()) as GitCheckoutResult;
+  }
+
+  async installPackages(packages: string[], options?: Partial<PackageInstallOptions>): Promise<PackageInstallResult> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/sandbox/${this.sandboxId}/packages/install`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey!
+      },
+      body: JSON.stringify({ packages, ...options })
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to install packages: ${response.statusText}`);
+    }
+
+    return (await response.json()) as PackageInstallResult;
+  }
+
+  async uninstallPackages(packages: string[], manager?: PackageManager, directory?: string): Promise<PackageInstallResult> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/sandbox/${this.sandboxId}/packages/uninstall`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey!
+      },
+      body: JSON.stringify({ packages, manager, directory })
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to uninstall packages: ${response.statusText}`);
+    }
+
+    return (await response.json()) as PackageInstallResult;
+  }
+
+  async listPackages(manager?: PackageManager, directory?: string): Promise<PackageListResult> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const params = new URLSearchParams();
+    if (manager) params.set('manager', manager);
+    if (directory) params.set('directory', directory);
+
+    const response = await fetch(
+      `${this.orchestratorUrl}/sandbox/${this.sandboxId}/packages?${params.toString()}`,
+      {
+        headers: { 'X-API-Key': this.apiKey! }
+      }
+    );
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to list packages: ${response.statusText}`);
+    }
+
+    return (await response.json()) as PackageListResult;
+  }
+
+  static async getTemplates(orchestratorUrl?: string): Promise<{ templates: TemplateInfo[] }> {
+    const url = orchestratorUrl || process.env.INSIEN_API_URL || 'http://localhost:3000';
+
+    const response = await fetch(`${url}/api/templates`);
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch templates: ${response.statusText}`);
+    }
+
+    return (await response.json()) as { templates: TemplateInfo[] };
+  }
+
+  static async getTemplate(templateId: string, orchestratorUrl?: string): Promise<Template> {
+    const url = orchestratorUrl || process.env.INSIEN_API_URL || 'http://localhost:3000';
+
+    const response = await fetch(`${url}/api/templates/${templateId}`);
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to fetch template: ${response.statusText}`);
+    }
+
+    const data = (await response.json()) as { template: Template };
+    return data.template;
   }
 
   static getSupportedLanguages(): SupportedLanguage[] {

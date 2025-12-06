@@ -21,5 +21,18 @@ export type {
   RunCodeOptions,
   RunCodeResult,
   CompileResult,
-  SupportedLanguage
+  SupportedLanguage,
+  PackageManager,
+  GitCloneOptions,
+  GitCloneResult,
+  GitPullResult,
+  GitCheckoutResult,
+  PackageInstallOptions,
+  PackageInstallResult,
+  PackageListResult,
+  TemplateInfo,
+  TemplateFile,
+  Template,
+  CreateFromTemplateOptions,
+  CreateFromTemplateResult
 } from './types.js';

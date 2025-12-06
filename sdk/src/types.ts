@@ -122,3 +122,86 @@ export interface PendingRequest {
   resolve: (value: RPCResponse) => void;
   reject: (error: Error) => void;
 }
+
+export type PackageManager = 'npm' | 'pip' | 'cargo' | 'go' | 'composer';
+
+export interface GitCloneOptions {
+  url: string;
+  branch?: string;
+  depth?: number;
+  directory?: string;
+}
+
+export interface GitCloneResult {
+  success: boolean;
+  directory: string;
+  branch: string;
+  error?: string;
+}
+
+export interface GitPullResult {
+  success: boolean;
+  error?: string;
+}
+
+export interface GitCheckoutResult {
+  success: boolean;
+  error?: string;
+}
+
+export interface PackageInstallOptions {
+  packages: string[];
+  manager?: PackageManager;
+  dev?: boolean;
+  global?: boolean;
+  directory?: string;
+}
+
+export interface PackageInstallResult {
+  success: boolean;
+  installed: string[];
+  failed: string[];
+  stdout: string;
+  stderr: string;
+  error?: string;
+}
+
+export interface PackageListResult {
+  success: boolean;
+  packages: string[];
+  error?: string;
+}
+
+export interface TemplateInfo {
+  id: string;
+  name: string;
+  description: string;
+  language: string;
+  packages: string[];
+  ports: number[];
+}
+
+export interface TemplateFile {
+  path: string;
+  content: string;
+}
+
+export interface Template extends TemplateInfo {
+  image: string;
+  files: TemplateFile[];
+  env: Record<string, string>;
+}
+
+export interface CreateFromTemplateOptions {
+  templateId: string;
+  tier?: string;
+}
+
+export interface CreateFromTemplateResult {
+  success: boolean;
+  sandboxId: string;
+  template: string;
+  agentUrl: string;
+  tier: string;
+  expiresAt: string;
+}

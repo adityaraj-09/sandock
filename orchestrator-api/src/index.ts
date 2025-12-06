@@ -23,6 +23,7 @@ import apiKeysRouter from './routes/apiKeys.js';
 import usersRouter from './routes/users.js';
 import authRouter from './routes/auth.js';
 import createSandboxesRouter from './routes/sandboxes.js';
+import templatesRouter from './routes/templates.js';
 import { logger } from './utils/logger.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { ResourceManager } from './services/resourceManager.js';
@@ -87,6 +88,7 @@ app.get('/health', async (_req: Request, res: Response) => {
 app.use('/api/auth', authRouter);
 app.use('/api/keys', apiKeysRouter);
 app.use('/api/users', usersRouter);
+app.use('/api/templates', templatesRouter);
 
 const sandboxesRouter = createSandboxesRouter({
   docker,

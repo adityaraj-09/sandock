@@ -8,13 +8,16 @@ import { logger } from '../utils/logger.js';
 import { ResourceManager } from '../services/resourceManager.js';
 import { ContainerOptimizer } from '../services/containerOptimizer.js';
 import { portAllocator } from '../services/portAllocator.js';
-import { RESOURCE_LIMITS } from '../config/limits.js';
+import { RESOURCE_LIMITS, getTierLimits, getResourceLimitsForTier } from '../config/limits.js';
 import {
   getImageForLanguage,
   getLanguageConfig,
   isLanguageSupported,
   normalizeLanguage
 } from '../config/images.js';
+import { getTemplate } from '../config/templates.js';
+import { cloneRepository, pullRepository, checkoutBranch } from '../services/git.js';
+import { installPackages, uninstallPackages, listInstalledPackages, detectPackageManager } from '../services/packages.js';
 import type {
   AuthenticatedRequest,
   SandboxRouterDependencies,
@@ -625,6 +628,291 @@ export default function createSandboxesRouter(dependencies: SandboxRouterDepende
       });
     } catch (error) {
       logger.error('Error during cleanup:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  const pendingRpcRequests = new Map<string, Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>>();
+
+  router.post('/create-from-template', authenticateApiKey(), strictLimiter, async (req, res: Response): Promise<void> => {
+    const startTime = Date.now();
+    let sandboxId: string | null = null;
+
+    try {
+      const { templateId } = req.body;
+
+      if (!templateId) {
+        res.status(400).json({ error: 'templateId is required' });
+        return;
+      }
+
+      const template = getTemplate(templateId);
+      if (!template) {
+        res.status(404).json({ error: 'Template not found' });
+        return;
+      }
+
+      sandboxId = uuidv4();
+      const userId = (req as AuthenticatedRequest).user.userId;
+      const apiKeyId = (req as AuthenticatedRequest).user.apiKeyId!;
+      const userTier = (req.body.tier || (req as AuthenticatedRequest).user.tier || 'free') as UserTier;
+
+      const canCreate = await resourceManager.canCreateSandbox(userId, apiKeyId, userTier);
+      if (!canCreate.allowed) {
+        res.status(429).json({ error: 'Sandbox creation limit exceeded', reason: canCreate.reason });
+        return;
+      }
+
+      const volumeName = await ensureDataVolume(sandboxId);
+      const agentToken = jwt.sign({ sandboxId, type: 'agent', userId, tier: userTier }, JWT_SECRET, { expiresIn: '24h' });
+      const tierLimits = getTierLimits(userTier);
+      const resourceLimits = getResourceLimitsForTier(userTier);
+      const lifetimeHours = tierLimits.lifetimeHours;
+      const expiresAt = new Date(Date.now() + lifetimeHours * 60 * 60 * 1000);
+
+      const envVars = [
+        `SANDBOX_ID=${sandboxId}`,
+        `ORCHESTRATOR_WS=ws://${ORCHESTRATOR_HOST}:${WS_PORT}/agent/${sandboxId}?token=${agentToken}`,
+        ...Object.entries(template.env).map(([k, v]) => `${k}=${v}`)
+      ];
+
+      const container = await (docker as unknown as Docker).createContainer({
+        Image: template.image,
+        name: `sandbox-${sandboxId}`,
+        Env: envVars,
+        WorkingDir: '/app',
+        HostConfig: {
+          NetworkMode: 'bridge',
+          AutoRemove: false,
+          Memory: resourceLimits.Memory,
+          MemorySwap: resourceLimits.MemorySwap,
+          CpuShares: resourceLimits.CpuShares,
+          Binds: [`${volumeName}:/app/data`]
+        },
+        Labels: {
+          'insien.sandbox.id': sandboxId,
+          'insien.sandbox.userId': userId,
+          'insien.sandbox.template': templateId
+        }
+      });
+
+      await container.start();
+
+      await pool.query(
+        `INSERT INTO sandboxes (id, user_id, api_key_id, status, metadata, created_at)
+         VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)`,
+        [sandboxId, userId, apiKeyId, 'active', JSON.stringify({ containerId: container.id, template: templateId, tier: userTier })]
+      );
+
+      await setSandboxMetadata(sandboxId, {
+        containerId: container.id,
+        userId,
+        apiKeyId,
+        tier: userTier,
+        createdAt: new Date().toISOString(),
+        expiresAt: expiresAt.toISOString(),
+        image: template.image,
+        language: template.language
+      });
+
+      const waitForAgent = (): Promise<void> => {
+        return new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('Agent connection timeout')), 30000);
+          const checkInterval = setInterval(() => {
+            if (agentConnections.has(sandboxId!)) {
+              clearInterval(checkInterval);
+              clearTimeout(timeout);
+              resolve();
+            }
+          }, 100);
+        });
+      };
+
+      await waitForAgent();
+      const agentWs = agentConnections.get(sandboxId)!;
+
+      for (const file of template.files) {
+        await new Promise<void>((resolve, reject) => {
+          const id = uuidv4();
+          const timeout = setTimeout(() => reject(new Error('Write timeout')), 10000);
+
+          if (!pendingRpcRequests.has(sandboxId!)) {
+            pendingRpcRequests.set(sandboxId!, new Map());
+          }
+          pendingRpcRequests.get(sandboxId!)!.set(id, {
+            resolve: () => { clearTimeout(timeout); resolve(); },
+            reject: (err) => { clearTimeout(timeout); reject(err); }
+          });
+
+          agentWs.send(JSON.stringify({ id, type: 'write', path: `/app/${file.path}`, content: file.content }));
+        });
+      }
+
+      if (template.packages.length > 0) {
+        const manager = detectPackageManager(template.language);
+        await installPackages(agentWs, pendingRpcRequests as never, sandboxId, { packages: template.packages, manager });
+      }
+
+      const duration = Date.now() - startTime;
+      logger.info(`[SANDBOX_CREATE:${sandboxId}] Created from template ${templateId} in ${duration}ms`);
+
+      res.status(201).json({
+        success: true,
+        sandboxId,
+        template: templateId,
+        agentUrl: `ws://${ORCHESTRATOR_HOST}:${WS_PORT}/client/${sandboxId}`,
+        tier: userTier,
+        expiresAt: expiresAt.toISOString()
+      });
+    } catch (error) {
+      logger.error(`[SANDBOX_CREATE:${sandboxId}] Error:`, error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  router.post('/:id/git/clone', authenticateApiKey(), async (req, res: Response): Promise<void> => {
+    try {
+      const { id: sandboxId } = req.params;
+      const { url, branch, depth, directory } = req.body;
+
+      if (!url) {
+        res.status(400).json({ error: 'url is required' });
+        return;
+      }
+
+      const agentWs = agentConnections.get(sandboxId);
+      if (!agentWs || agentWs.readyState !== WebSocket.OPEN) {
+        res.status(400).json({ error: 'Agent not connected' });
+        return;
+      }
+
+      const result = await cloneRepository(agentWs, pendingRpcRequests as never, sandboxId, { url, branch, depth, directory });
+
+      if (result.success) {
+        res.json({ success: true, directory: result.directory, branch: result.branch });
+      } else {
+        res.status(400).json({ success: false, error: result.error });
+      }
+    } catch (error) {
+      logger.error('Git clone error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  router.post('/:id/git/pull', authenticateApiKey(), async (req, res: Response): Promise<void> => {
+    try {
+      const { id: sandboxId } = req.params;
+      const { directory = '/app' } = req.body;
+
+      const agentWs = agentConnections.get(sandboxId);
+      if (!agentWs || agentWs.readyState !== WebSocket.OPEN) {
+        res.status(400).json({ error: 'Agent not connected' });
+        return;
+      }
+
+      const result = await pullRepository(agentWs, pendingRpcRequests as never, sandboxId, directory);
+      res.json(result);
+    } catch (error) {
+      logger.error('Git pull error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  router.post('/:id/git/checkout', authenticateApiKey(), async (req, res: Response): Promise<void> => {
+    try {
+      const { id: sandboxId } = req.params;
+      const { branch, directory = '/app' } = req.body;
+
+      if (!branch) {
+        res.status(400).json({ error: 'branch is required' });
+        return;
+      }
+
+      const agentWs = agentConnections.get(sandboxId);
+      if (!agentWs || agentWs.readyState !== WebSocket.OPEN) {
+        res.status(400).json({ error: 'Agent not connected' });
+        return;
+      }
+
+      const result = await checkoutBranch(agentWs, pendingRpcRequests as never, sandboxId, directory, branch);
+      res.json(result);
+    } catch (error) {
+      logger.error('Git checkout error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  router.post('/:id/packages/install', authenticateApiKey(), async (req, res: Response): Promise<void> => {
+    try {
+      const { id: sandboxId } = req.params;
+      const { packages, manager, dev, global: isGlobal, directory } = req.body;
+
+      if (!packages || !Array.isArray(packages) || packages.length === 0) {
+        res.status(400).json({ error: 'packages array is required' });
+        return;
+      }
+
+      const agentWs = agentConnections.get(sandboxId);
+      if (!agentWs || agentWs.readyState !== WebSocket.OPEN) {
+        res.status(400).json({ error: 'Agent not connected' });
+        return;
+      }
+
+      const result = await installPackages(agentWs, pendingRpcRequests as never, sandboxId, {
+        packages,
+        manager,
+        dev,
+        global: isGlobal,
+        directory
+      });
+
+      res.json(result);
+    } catch (error) {
+      logger.error('Package install error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  router.post('/:id/packages/uninstall', authenticateApiKey(), async (req, res: Response): Promise<void> => {
+    try {
+      const { id: sandboxId } = req.params;
+      const { packages, manager, directory } = req.body;
+
+      if (!packages || !Array.isArray(packages) || packages.length === 0) {
+        res.status(400).json({ error: 'packages array is required' });
+        return;
+      }
+
+      const agentWs = agentConnections.get(sandboxId);
+      if (!agentWs || agentWs.readyState !== WebSocket.OPEN) {
+        res.status(400).json({ error: 'Agent not connected' });
+        return;
+      }
+
+      const result = await uninstallPackages(agentWs, pendingRpcRequests as never, sandboxId, packages, manager, directory);
+      res.json(result);
+    } catch (error) {
+      logger.error('Package uninstall error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  router.get('/:id/packages', authenticateApiKey(), async (req, res: Response): Promise<void> => {
+    try {
+      const { id: sandboxId } = req.params;
+      const manager = (req.query.manager as string) || 'npm';
+      const directory = (req.query.directory as string) || '/app';
+
+      const agentWs = agentConnections.get(sandboxId);
+      if (!agentWs || agentWs.readyState !== WebSocket.OPEN) {
+        res.status(400).json({ error: 'Agent not connected' });
+        return;
+      }
+
+      const result = await listInstalledPackages(agentWs, pendingRpcRequests as never, sandboxId, manager as never, directory);
+      res.json(result);
+    } catch (error) {
+      logger.error('Package list error:', error);
       res.status(500).json({ error: (error as Error).message });
     }
   });

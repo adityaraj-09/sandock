@@ -1,6 +1,6 @@
 # @insien/sandock
 
-TypeScript SDK for executing code in isolated sandbox environments.
+TypeScript SDK for executing code in isolated sandbox environments with multi-language support, Git integration, and package management.
 
 ## Installation
 
@@ -17,18 +17,84 @@ const sandbox = new Sandbox({
   apiKey: 'your-api-key'
 });
 
-// Write a file
 await sandbox.writeFile('hello.js', "console.log('Hello!');");
 
-// Run a command
 const result = await sandbox.runCommand('node', ['hello.js']);
-console.log(result.stdout); // Hello!
+console.log(result.stdout);
 
-// Cleanup when done
 await sandbox.destroy();
 ```
 
-> **Note:** The sandbox is automatically created on first use. No need to call `create()` manually!
+## Features
+
+- Multi-language code execution (JavaScript, Python, Java, C++, Go, Rust, TypeScript)
+- Pre-configured templates for quick project setup
+- Git repository cloning and management
+- Package manager integration (npm, pip, cargo, go, composer)
+- Port exposure for running services
+- File system operations
+- Resource isolation and security
+
+## Templates
+
+Create sandboxes from pre-configured templates:
+
+```typescript
+const templates = await Sandbox.getTemplates();
+
+const sandbox = new Sandbox({ apiKey: 'your-api-key' });
+await sandbox.createFromTemplate('node-express');
+
+await sandbox.runCommand('npm', ['start']);
+```
+
+Available templates:
+| Template | Description |
+|----------|-------------|
+| `node-express` | Express.js REST API |
+| `python-flask` | Flask REST API |
+| `python-fastapi` | FastAPI with async support |
+| `node-typescript` | TypeScript Node.js starter |
+| `go-api` | Go HTTP server |
+| `rust-hello` | Rust starter project |
+| `python-datascience` | NumPy, Pandas, Matplotlib |
+| `empty` | Blank sandbox |
+
+## Git Integration
+
+Clone and manage repositories:
+
+```typescript
+await sandbox.create();
+
+await sandbox.gitClone({
+  url: 'https://github.com/user/repo',
+  branch: 'main',
+  depth: 1
+});
+
+await sandbox.gitPull();
+
+await sandbox.gitCheckout('feature-branch');
+```
+
+## Package Management
+
+Install and manage packages:
+
+```typescript
+await sandbox.installPackages(['express', 'lodash']);
+
+await sandbox.installPackages(['jest'], { dev: true });
+
+await sandbox.installPackages(['numpy', 'pandas'], { manager: 'pip' });
+
+const { packages } = await sandbox.listPackages();
+
+await sandbox.uninstallPackages(['lodash']);
+```
+
+Supported package managers: `npm`, `pip`, `cargo`, `go`, `composer`
 
 ## API Reference
 
@@ -38,16 +104,13 @@ await sandbox.destroy();
 new Sandbox(options?: SandboxOptions)
 ```
 
-**Options:**
-| Option | Type | Required | Default | Description |
-|--------|------|----------|---------|-------------|
-| `apiKey` | `string` | Yes* | `INSIEN_API_KEY` env | API key for authentication |
-| `orchestratorUrl` | `string` | No | `http://localhost:3000` | Orchestrator API URL |
-| `wsUrl` | `string` | No | `ws://localhost:3001` | WebSocket URL |
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `apiKey` | `string` | `INSIEN_API_KEY` env | API key for authentication |
+| `orchestratorUrl` | `string` | `http://localhost:3000` | Orchestrator API URL |
+| `wsUrl` | `string` | `ws://localhost:3001` | WebSocket URL |
 
-*Required either as option or environment variable
-
-### Methods
+### Sandbox Lifecycle
 
 #### `create(): Promise<CreateResponse>`
 
@@ -57,29 +120,46 @@ Creates a new sandbox instance. Called automatically on first use.
 const { sandboxId, agentUrl } = await sandbox.create();
 ```
 
+#### `createFromTemplate(templateId, tier?): Promise<CreateFromTemplateResult>`
+
+Creates a sandbox from a template with pre-configured files and packages.
+
+```typescript
+const result = await sandbox.createFromTemplate('python-flask');
+```
+
+#### `destroy(): Promise<{ success: boolean }>`
+
+Destroys the sandbox and cleans up resources.
+
+```typescript
+await sandbox.destroy();
+```
+
+#### `disconnect(): Promise<void>`
+
+Disconnects WebSocket without destroying the sandbox.
+
+```typescript
+await sandbox.disconnect();
+```
+
+### Command Execution
+
 #### `runCommand(cmd, args?, options?): Promise<CommandResult>`
 
 Executes a command in the sandbox.
 
 ```typescript
-// Simple usage
 const result = await sandbox.runCommand('node', ['--version']);
 
-// With options
 const result = await sandbox.runCommand('npm', ['install'], {
-  timeout: 300000,  // 5 minutes
+  timeout: 300000,
   background: false
-});
-
-// Object syntax
-const result = await sandbox.runCommand({
-  cmd: 'node',
-  args: ['script.js'],
-  options: { timeout: 60000 }
 });
 ```
 
-**Returns:**
+Returns:
 ```typescript
 {
   stdout: string;
@@ -90,78 +170,132 @@ const result = await sandbox.runCommand({
 }
 ```
 
-#### `writeFile(path, content): Promise<WriteFileResult>`
-
-Writes a file to the sandbox filesystem.
-
-```typescript
-await sandbox.writeFile('index.js', 'console.log("hello");');
-
-// Object syntax
-await sandbox.writeFile({ path: 'index.js', content: '...' });
-```
-
-#### `writeFiles(files): Promise<WriteFilesResult>`
-
-Writes multiple files at once.
-
-```typescript
-// Array format
-await sandbox.writeFiles([
-  { path: 'file1.js', content: '...' },
-  { path: 'file2.js', content: '...' }
-]);
-
-// Object format (objects are JSON stringified)
-await sandbox.writeFiles({
-  'file1.js': 'content1',
-  'package.json': { name: 'app', version: '1.0.0' }
-});
-```
-
-#### `getFile(path): Promise<ReadFileResult>`
-
-Reads a file from the sandbox filesystem.
-
-```typescript
-const { content } = await sandbox.getFile('output.txt');
-```
-
 #### `runCode(code, language, options?): Promise<RunCodeResult>`
 
-Convenience method to run code in a specific language.
+Executes code in a specific language.
 
 ```typescript
 const result = await sandbox.runCode(
   'print("Hello, World!")',
   'python'
 );
-console.log(result.stdout); // Hello, World!
 ```
 
-**Supported Languages:**
-- `javascript` - Node.js
-- `typescript` - ts-node
-- `python` - Python 3.11
-- `java` - OpenJDK 17
-- `cpp` - g++ with C++17
-- `go` - Go 1.21
-- `rust` - Rust 1.75
+Supported languages: `javascript`, `typescript`, `python`, `java`, `cpp`, `go`, `rust`
 
-**Options:**
+Options:
 ```typescript
 {
-  fileName?: string;    // Custom filename
-  timeout?: number;     // Execution timeout (ms)
-  autoDestroy?: boolean; // Destroy sandbox after (default: true)
-  input?: string;       // Stdin input
-  args?: string[];      // Command line arguments
+  fileName?: string;
+  timeout?: number;
+  autoDestroy?: boolean;
+  input?: string;
+  args?: string[];
 }
 ```
 
+### File Operations
+
+#### `writeFile(path, content): Promise<WriteFileResult>`
+
+Writes a file to the sandbox.
+
+```typescript
+await sandbox.writeFile('index.js', 'console.log("hello");');
+```
+
+#### `writeFiles(files): Promise<WriteFilesResult>`
+
+Writes multiple files.
+
+```typescript
+await sandbox.writeFiles([
+  { path: 'file1.js', content: '...' },
+  { path: 'file2.js', content: '...' }
+]);
+
+await sandbox.writeFiles({
+  'index.js': 'console.log("hi")',
+  'package.json': { name: 'app', version: '1.0.0' }
+});
+```
+
+#### `getFile(path): Promise<ReadFileResult>`
+
+Reads a file from the sandbox.
+
+```typescript
+const { content } = await sandbox.getFile('output.txt');
+```
+
+### Git Operations
+
+#### `gitClone(options): Promise<GitCloneResult>`
+
+Clones a Git repository.
+
+```typescript
+const result = await sandbox.gitClone({
+  url: 'https://github.com/user/repo',
+  branch: 'main',
+  depth: 1,
+  directory: 'myrepo'
+});
+```
+
+#### `gitPull(directory?): Promise<GitPullResult>`
+
+Pulls latest changes.
+
+```typescript
+await sandbox.gitPull('/app/myrepo');
+```
+
+#### `gitCheckout(branch, directory?): Promise<GitCheckoutResult>`
+
+Checks out a branch.
+
+```typescript
+await sandbox.gitCheckout('develop');
+```
+
+### Package Management
+
+#### `installPackages(packages, options?): Promise<PackageInstallResult>`
+
+Installs packages.
+
+```typescript
+await sandbox.installPackages(['express', 'cors']);
+
+await sandbox.installPackages(['pytest'], {
+  manager: 'pip',
+  dev: true,
+  directory: '/app'
+});
+```
+
+#### `uninstallPackages(packages, manager?, directory?): Promise<PackageInstallResult>`
+
+Uninstalls packages.
+
+```typescript
+await sandbox.uninstallPackages(['lodash']);
+```
+
+#### `listPackages(manager?, directory?): Promise<PackageListResult>`
+
+Lists installed packages.
+
+```typescript
+const { packages } = await sandbox.listPackages('npm');
+```
+
+### Port Management
+
 #### `exposePort(containerPort): Promise<ExposePortResult>`
 
-Exposes a container port to the host.
+Exposes a container port.
 
 ```typescript
 const { hostPort, url } = await sandbox.exposePort(3000);
@@ -170,37 +304,36 @@ console.log(`App available at: ${url}`);
 
 #### `getExposedPorts(): Promise<GetPortsResult>`
 
-Gets all exposed ports for the sandbox.
+Gets all exposed ports.
 
 ```typescript
 const { ports } = await sandbox.getExposedPorts();
 ```
 
-#### `disconnect(): Promise<void>`
-
-Disconnects the WebSocket connection without destroying the sandbox.
-
-```typescript
-await sandbox.disconnect();
-```
-
-#### `destroy(): Promise<{ success: boolean }>`
-
-Destroys the sandbox instance and cleans up resources.
-
-```typescript
-await sandbox.destroy();
-```
-
 ### Static Methods
+
+#### `Sandbox.getTemplates(orchestratorUrl?): Promise<{ templates: TemplateInfo[] }>`
+
+Fetches available templates.
+
+```typescript
+const { templates } = await Sandbox.getTemplates();
+```
+
+#### `Sandbox.getTemplate(templateId, orchestratorUrl?): Promise<Template>`
+
+Gets a specific template.
+
+```typescript
+const template = await Sandbox.getTemplate('node-express');
+```
 
 #### `Sandbox.getSupportedLanguages(): SupportedLanguage[]`
 
-Returns an array of supported language identifiers.
+Returns supported language identifiers.
 
 ```typescript
 const languages = Sandbox.getSupportedLanguages();
-// ['javascript', 'python', 'java', 'cpp', 'go', 'rust', 'typescript']
 ```
 
 ### Utility Methods
@@ -211,11 +344,9 @@ Returns the current sandbox ID.
 
 #### `isConnected(): boolean`
 
-Returns whether the sandbox is currently connected.
+Returns connection status.
 
 ## Error Handling
-
-All methods throw errors on failure. Wrap calls in try-catch:
 
 ```typescript
 try {
@@ -230,19 +361,23 @@ try {
 | Variable | Description |
 |----------|-------------|
 | `INSIEN_API_KEY` | API key (required if not in options) |
-| `INSIEN_API_URL` | Orchestrator URL (default: `http://localhost:3000`) |
-| `INSIEN_WS_URL` | WebSocket URL (default: `ws://localhost:3001`) |
+| `INSIEN_API_URL` | Orchestrator URL |
+| `INSIEN_WS_URL` | WebSocket URL |
 
 ## TypeScript Support
-
-Full TypeScript support with exported types:
 
 ```typescript
 import type {
   SandboxOptions,
   CommandResult,
   RunCodeResult,
-  SupportedLanguage
+  SupportedLanguage,
+  GitCloneOptions,
+  GitCloneResult,
+  PackageInstallOptions,
+  PackageInstallResult,
+  TemplateInfo,
+  Template
 } from '@insien/sandock';
 ```
 
