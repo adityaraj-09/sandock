@@ -1,11 +1,10 @@
-import express from 'express';
+import { Router, Request, Response } from 'express';
 import { registerUser, loginUser } from '../services/auth.js';
 import { z } from 'zod';
 
-const router = express.Router();
+const router = Router();
 
-// Register a new user
-router.post('/register', async (req, res) => {
+router.post('/register', async (req: Request, res: Response): Promise<void> => {
   try {
     const { email, password, firstName, lastName, username } = req.body;
 
@@ -25,14 +24,16 @@ router.post('/register', async (req, res) => {
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return res.status(400).json({ 
-        error: 'Invalid request data', 
-        details: error.errors 
+      res.status(400).json({
+        error: 'Invalid request data',
+        details: error.errors
       });
+      return;
     }
-    
-    if (error.message === 'User with this email already exists') {
-      return res.status(409).json({ error: error.message });
+
+    if ((error as Error).message === 'User with this email already exists') {
+      res.status(409).json({ error: (error as Error).message });
+      return;
     }
 
     console.error('Error registering user:', error);
@@ -40,8 +41,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// Login user
-router.post('/login', async (req, res) => {
+router.post('/login', async (req: Request, res: Response): Promise<void> => {
   try {
     const { email, password } = req.body;
 
@@ -55,14 +55,16 @@ router.post('/login', async (req, res) => {
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return res.status(400).json({ 
-        error: 'Invalid request data', 
-        details: error.errors 
+      res.status(400).json({
+        error: 'Invalid request data',
+        details: error.errors
       });
+      return;
     }
 
-    if (error.message === 'Invalid email or password') {
-      return res.status(401).json({ error: error.message });
+    if ((error as Error).message === 'Invalid email or password') {
+      res.status(401).json({ error: (error as Error).message });
+      return;
     }
 
     console.error('Error logging in user:', error);
@@ -71,4 +73,3 @@ router.post('/login', async (req, res) => {
 });
 
 export default router;
-

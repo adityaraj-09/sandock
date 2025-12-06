@@ -1,29 +1,21 @@
-/**
- * WebSocket Authentication Service
- * Handles authentication for both agent and client WebSocket connections
- */
-
 import jwt from 'jsonwebtoken';
 import { logger } from '../utils/logger.js';
 import { getSandboxMetadata } from './redis.js';
 import pool from '../db/index.js';
+import type { AgentAuthResult, ClientAuthResult, JWTPayload } from '../types/index.js';
 
-/**
- * Verify agent WebSocket connection
- * @param {string} sandboxId - Sandbox ID
- * @param {string} token - JWT token
- * @param {string} jwtSecret - JWT secret
- * @returns {Promise<Object>} Verification result
- */
-export async function verifyAgentConnection(sandboxId, token, jwtSecret) {
+export async function verifyAgentConnection(
+  sandboxId: string,
+  token: string | null,
+  jwtSecret: string
+): Promise<AgentAuthResult> {
   try {
     if (!token) {
       return { valid: false, error: 'Missing authentication token' };
     }
 
-    const decoded = jwt.verify(token, jwtSecret);
+    const decoded = jwt.verify(token, jwtSecret) as JWTPayload;
 
-    // Verify token claims
     if (decoded.sandboxId !== sandboxId) {
       return { valid: false, error: 'Token sandbox ID mismatch' };
     }
@@ -39,10 +31,10 @@ export async function verifyAgentConnection(sandboxId, token, jwtSecret) {
       tier: decoded.tier
     };
   } catch (error) {
-    if (error.name === 'TokenExpiredError') {
+    if ((error as Error).name === 'TokenExpiredError') {
       return { valid: false, error: 'Token expired' };
     }
-    if (error.name === 'JsonWebTokenError') {
+    if ((error as Error).name === 'JsonWebTokenError') {
       return { valid: false, error: 'Invalid token' };
     }
     logger.error('Agent auth error:', error);
@@ -50,23 +42,18 @@ export async function verifyAgentConnection(sandboxId, token, jwtSecret) {
   }
 }
 
-/**
- * Verify client WebSocket connection
- * @param {string} sandboxId - Sandbox ID
- * @param {string} apiKey - API key (from query param or header)
- * @param {string} token - Optional JWT token for user verification
- * @param {string} jwtSecret - JWT secret
- * @returns {Promise<Object>} Verification result
- */
-export async function verifyClientConnection(sandboxId, apiKey, token, jwtSecret) {
+export async function verifyClientConnection(
+  sandboxId: string,
+  apiKey: string | null,
+  token: string | null,
+  jwtSecret: string
+): Promise<ClientAuthResult> {
   try {
-    // First, verify the sandbox exists
     const metadata = await getSandboxMetadata(sandboxId);
     if (!metadata) {
       return { valid: false, error: 'Sandbox not found' };
     }
 
-    // Method 1: API Key authentication
     if (apiKey) {
       const authResult = await verifyApiKeyForSandbox(sandboxId, apiKey);
       if (authResult.valid) {
@@ -74,12 +61,10 @@ export async function verifyClientConnection(sandboxId, apiKey, token, jwtSecret
       }
     }
 
-    // Method 2: JWT token authentication (for SDK clients)
     if (token) {
       try {
-        const decoded = jwt.verify(token, jwtSecret);
+        const decoded = jwt.verify(token, jwtSecret) as { userId: string };
 
-        // Verify user owns this sandbox
         const sandboxResult = await pool.query(
           'SELECT user_id FROM sandboxes WHERE id = $1 AND status = $2',
           [sandboxId, 'active']
@@ -99,13 +84,12 @@ export async function verifyClientConnection(sandboxId, apiKey, token, jwtSecret
           method: 'jwt'
         };
       } catch (error) {
-        if (error.name !== 'JsonWebTokenError' && error.name !== 'TokenExpiredError') {
+        if ((error as Error).name !== 'JsonWebTokenError' && (error as Error).name !== 'TokenExpiredError') {
           logger.error('Client JWT auth error:', error);
         }
       }
     }
 
-    // Method 3: Check if sandbox allows unauthenticated access (internal use)
     if (metadata.allowUnauthenticated === true) {
       return {
         valid: true,
@@ -121,22 +105,14 @@ export async function verifyClientConnection(sandboxId, apiKey, token, jwtSecret
   }
 }
 
-/**
- * Verify API key has access to sandbox
- * @param {string} sandboxId - Sandbox ID
- * @param {string} apiKey - API key
- * @returns {Promise<Object>} Verification result
- */
-async function verifyApiKeyForSandbox(sandboxId, apiKey) {
+async function verifyApiKeyForSandbox(sandboxId: string, apiKey: string): Promise<ClientAuthResult> {
   try {
-    // Extract prefix for lookup
     if (!apiKey.startsWith('isk_')) {
       return { valid: false, error: 'Invalid API key format' };
     }
 
     const keyPrefix = apiKey.substring(0, 12);
 
-    // Find the API key
     const keyResult = await pool.query(
       `SELECT ak.id, ak.user_id, ak.key_hash
        FROM api_keys ak
@@ -150,7 +126,6 @@ async function verifyApiKeyForSandbox(sandboxId, apiKey) {
       return { valid: false, error: 'Invalid or expired API key' };
     }
 
-    // Verify the sandbox belongs to this user
     const sandboxResult = await pool.query(
       'SELECT user_id FROM sandboxes WHERE id = $1 AND status = $2',
       [sandboxId, 'active']
@@ -160,7 +135,6 @@ async function verifyApiKeyForSandbox(sandboxId, apiKey) {
       return { valid: false, error: 'Sandbox not found or inactive' };
     }
 
-    // Check if API key's user owns the sandbox
     const keyUserId = keyResult.rows[0].user_id;
     const sandboxUserId = sandboxResult.rows[0].user_id;
 
@@ -168,7 +142,6 @@ async function verifyApiKeyForSandbox(sandboxId, apiKey) {
       return { valid: false, error: 'Not authorized to access this sandbox' };
     }
 
-    // Update last used timestamp
     await pool.query(
       'UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = $1',
       [keyResult.rows[0].id]
@@ -186,15 +159,12 @@ async function verifyApiKeyForSandbox(sandboxId, apiKey) {
   }
 }
 
-/**
- * Generate a client access token for a sandbox
- * @param {string} sandboxId - Sandbox ID
- * @param {string} userId - User ID
- * @param {string} jwtSecret - JWT secret
- * @param {number} expiresIn - Token expiry in seconds (default 1 hour)
- * @returns {string} JWT token
- */
-export function generateClientToken(sandboxId, userId, jwtSecret, expiresIn = 3600) {
+export function generateClientToken(
+  sandboxId: string,
+  userId: string,
+  jwtSecret: string,
+  expiresIn = 3600
+): string {
   return jwt.sign(
     {
       sandboxId,
@@ -207,9 +177,6 @@ export function generateClientToken(sandboxId, userId, jwtSecret, expiresIn = 36
   );
 }
 
-/**
- * WebSocket close codes
- */
 export const WS_CLOSE_CODES = {
   NORMAL: 1000,
   GOING_AWAY: 1001,
@@ -226,4 +193,4 @@ export const WS_CLOSE_CODES = {
   TRY_AGAIN_LATER: 1013,
   BAD_GATEWAY: 1014,
   TLS_HANDSHAKE: 1015
-};
+} as const;

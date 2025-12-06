@@ -1,4 +1,4 @@
-import express from 'express';
+import { Router, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
 import WebSocket from 'ws';
@@ -15,12 +15,17 @@ import {
   isLanguageSupported,
   normalizeLanguage
 } from '../config/images.js';
+import type {
+  AuthenticatedRequest,
+  SandboxRouterDependencies,
+  Docker,
+  SandboxMetadata,
+  UserTier
+} from '../types/index.js';
 
-// Volume name prefix for persistent data
 const VOLUME_PREFIX = 'sandbox-data-';
 
-// Router factory - takes dependencies
-export default function createSandboxesRouter(dependencies) {
+export default function createSandboxesRouter(dependencies: SandboxRouterDependencies) {
   const {
     docker,
     agentConnections,
@@ -34,32 +39,22 @@ export default function createSandboxesRouter(dependencies) {
     deleteAgentConnection,
     deletePortMapping,
     cleanupSandbox,
-    getPortMapping,
     setPortMapping
   } = dependencies;
 
-  const router = express.Router();
+  const router = Router();
+  const resourceManager = new ResourceManager(docker as unknown as Docker, pool);
+  const containerOptimizer = new ContainerOptimizer(docker as unknown as Docker);
 
-  // Initialize resource management services
-  const resourceManager = new ResourceManager(docker, pool);
-  const containerOptimizer = new ContainerOptimizer(docker);
-
-  /**
-   * Create or get a data volume for persistent storage
-   * @param {string} sandboxId - Sandbox ID
-   * @returns {Promise<string>} Volume name
-   */
-  async function ensureDataVolume(sandboxId) {
+  async function ensureDataVolume(sandboxId: string): Promise<string> {
     const volumeName = `${VOLUME_PREFIX}${sandboxId}`;
     try {
-      // Check if volume exists
-      const volume = docker.getVolume(volumeName);
+      const volume = (docker as unknown as Docker).getVolume(volumeName);
       await volume.inspect();
       logger.debug(`Volume ${volumeName} already exists`);
     } catch (error) {
-      if (error.statusCode === 404) {
-        // Create the volume
-        await docker.createVolume({
+      if ((error as { statusCode?: number }).statusCode === 404) {
+        await (docker as unknown as Docker).createVolume({
           Name: volumeName,
           Labels: {
             'insien.sandbox.id': sandboxId,
@@ -74,135 +69,88 @@ export default function createSandboxesRouter(dependencies) {
     return volumeName;
   }
 
-  /**
-   * Remove a data volume
-   * @param {string} sandboxId - Sandbox ID
-   */
-  async function removeDataVolume(sandboxId) {
+  async function removeDataVolume(sandboxId: string): Promise<void> {
     const volumeName = `${VOLUME_PREFIX}${sandboxId}`;
     try {
-      const volume = docker.getVolume(volumeName);
+      const volume = (docker as unknown as Docker).getVolume(volumeName);
       await volume.remove();
       logger.info(`Removed data volume: ${volumeName}`);
     } catch (error) {
-      if (error.statusCode !== 404) {
+      if ((error as { statusCode?: number }).statusCode !== 404) {
         logger.error(`Error removing volume ${volumeName}:`, error);
       }
     }
   }
 
-  router.post('/create', authenticateApiKey(), strictLimiter, async (req, res) => {
+  router.post('/create', authenticateApiKey(), strictLimiter, async (req, res: Response): Promise<void> => {
     const startTime = Date.now();
-    let sandboxId = null;
-    
+    let sandboxId: string | null = null;
+
     try {
       logger.info('[SANDBOX_CREATE] Request received');
       sandboxId = uuidv4();
-      const userId = req.user.userId;
-      const apiKeyId = req.user.apiKeyId;
-      const userTier = req.body.tier || req.user.tier || 'free';
-      
+      const userId = (req as AuthenticatedRequest).user.userId;
+      const apiKeyId = (req as AuthenticatedRequest).user.apiKeyId!;
+      const userTier = (req.body.tier || (req as AuthenticatedRequest).user.tier || 'free') as UserTier;
+
       logger.debug(`[SANDBOX_CREATE:${sandboxId}] Starting creation for user ${userId}, apiKey ${apiKeyId}, tier ${userTier}`);
 
-      // Check if user can create a new sandbox
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Checking quota limits...`);
       const canCreate = await resourceManager.canCreateSandbox(userId, apiKeyId, userTier);
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Quota check result:`, canCreate);
-      
+
       if (!canCreate.allowed) {
         logger.warn(`[SANDBOX_CREATE:${sandboxId}] Quota limit exceeded: ${canCreate.reason}`);
-        return res.status(429).json({ 
+        res.status(429).json({
           error: 'Sandbox creation limit exceeded',
-          reason: canCreate.reason 
+          reason: canCreate.reason
         });
+        return;
       }
 
-      // Create JWT token for agent authentication
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Creating agent JWT token...`);
       const agentToken = jwt.sign(
         { sandboxId, type: 'agent', userId, tier: userTier },
         JWT_SECRET,
         { expiresIn: '24h' }
       );
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Agent token created`);
 
-      // Get optimized container configuration
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Getting container configuration...`);
       let containerConfig = resourceManager.getContainerConfig(sandboxId, agentToken, userTier);
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Container config created:`, {
-        name: containerConfig.name,
-        image: containerConfig.Image,
-        memory: containerConfig.HostConfig?.Memory,
-        cpuShares: containerConfig.HostConfig?.CpuShares
-      });
-      
-      // Add host configuration for orchestrator connection
+
       if (ORCHESTRATOR_HOST === 'host.docker.internal') {
         containerConfig.HostConfig.ExtraHosts = ['host.docker.internal:host-gateway'];
-        logger.debug(`[SANDBOX_CREATE:${sandboxId}] Added host.docker.internal mapping`);
       }
 
-      // Optimize container for faster startup
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Optimizing container startup...`);
       containerConfig = await containerOptimizer.optimizeContainerStartup(containerConfig);
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Container startup optimized`);
-      
-      // Use optimized image if available
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Getting optimized image for ${AGENT_IMAGE}...`);
+
       const optimizedImage = await containerOptimizer.optimizeAgentImage(AGENT_IMAGE);
       containerConfig.Image = optimizedImage;
       logger.info(`[SANDBOX_CREATE:${sandboxId}] Using image: ${optimizedImage}`);
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Container config before creation:`, {
-        Image: containerConfig.Image,
-        name: containerConfig.name,
-        Memory: containerConfig.HostConfig?.Memory,
-        CpuShares: containerConfig.HostConfig?.CpuShares
-      });
 
-      // Create and start container with resource limits
-      logger.info(`[SANDBOX_CREATE:${sandboxId}] Creating Docker container...`);
-      const container = await docker.createContainer(containerConfig);
+      const container = await (docker as unknown as Docker).createContainer(containerConfig);
       logger.info(`[SANDBOX_CREATE:${sandboxId}] Container created: ${container.id}`);
-      
-      // Start container with timeout
-      logger.info(`[SANDBOX_CREATE:${sandboxId}] Starting container (timeout: ${RESOURCE_LIMITS.SYSTEM.CONTAINER_STARTUP_TIMEOUT_SECONDS}s)...`);
+
       const startPromise = container.start();
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Container startup timeout')), 
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Container startup timeout')),
         RESOURCE_LIMITS.SYSTEM.CONTAINER_STARTUP_TIMEOUT_SECONDS * 1000)
       );
 
       await Promise.race([startPromise, timeoutPromise]);
       logger.info(`[SANDBOX_CREATE:${sandboxId}] Container started successfully`);
-      
-      // Verify container is actually running
-      try {
-        const containerInfo = await container.inspect();
-        
-        if (!containerInfo.State.Running) {
-          const logs = await container.logs({ stdout: true, stderr: true, tail: 50 });
-          logger.error(`[SANDBOX_CREATE:${sandboxId}] Container stopped immediately. Logs: ${logs.toString()}`);
-          throw new Error(`Container stopped immediately. Status: ${containerInfo.State.Status}, ExitCode: ${containerInfo.State.ExitCode}`);
-        }
-      } catch (error) {
-        logger.error(`[SANDBOX_CREATE:${sandboxId}] Container verification failed:`, error);
-        throw error;
+
+      const containerInfo = await container.inspect();
+      if (!containerInfo.State.Running) {
+        const logs = await container.logs({ stdout: true, stderr: true, tail: 50 });
+        logger.error(`[SANDBOX_CREATE:${sandboxId}] Container stopped immediately. Logs: ${logs.toString()}`);
+        throw new Error(`Container stopped immediately. Status: ${containerInfo.State.Status}, ExitCode: ${containerInfo.State.ExitCode}`);
       }
 
-      // Get container name from config or container object
       const containerName = containerConfig.name || `sandbox-${sandboxId}`;
 
-      // Store sandbox in database
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Storing sandbox in database...`);
       await pool.query(
         `INSERT INTO sandboxes (id, user_id, api_key_id, status, metadata)
          VALUES ($1, $2, $3, 'active', $4)`,
         [sandboxId, userId, apiKeyId, JSON.stringify({ containerName, containerId: container.id })]
       );
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Sandbox stored in database`);
 
-      // Store metadata in Redis with enhanced information
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Storing metadata in Redis...`);
       await setSandboxMetadata(sandboxId, {
         userId,
         apiKeyId,
@@ -218,12 +166,10 @@ export default function createSandboxesRouter(dependencies) {
         image: optimizedImage,
         expiresAt: new Date(Date.now() + RESOURCE_LIMITS.USER.SANDBOX_LIFETIME_HOURS * 60 * 60 * 1000).toISOString()
       });
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Metadata stored in Redis`);
 
       const duration = Date.now() - startTime;
       logger.info(`[SANDBOX_CREATE:${sandboxId}] Sandbox created successfully in ${duration}ms for user ${userId} (tier: ${userTier})`);
-      
-      logger.debug(`[SANDBOX_CREATE:${sandboxId}] Sending response...`);
+
       res.json({
         sandboxId,
         agentUrl: `ws://localhost:${WS_PORT}/agent/${sandboxId}`,
@@ -235,19 +181,16 @@ export default function createSandboxesRouter(dependencies) {
         },
         expiresAt: new Date(Date.now() + RESOURCE_LIMITS.USER.SANDBOX_LIFETIME_HOURS * 60 * 60 * 1000).toISOString()
       });
-      logger.info(`[SANDBOX_CREATE:${sandboxId}] Response sent successfully`);
     } catch (error) {
       const duration = Date.now() - startTime;
       logger.error(`[SANDBOX_CREATE:${sandboxId || 'unknown'}] Error after ${duration}ms:`, error);
-      logger.error(`[SANDBOX_CREATE:${sandboxId || 'unknown'}] Error stack:`, error.stack);
-      
-      // Try to clean up container if it was created
+
       if (sandboxId) {
         try {
           const metadata = await getSandboxMetadata(sandboxId);
           if (metadata && metadata.containerId) {
             logger.warn(`[SANDBOX_CREATE:${sandboxId}] Attempting to clean up container ${metadata.containerId}`);
-            const container = docker.getContainer(metadata.containerId);
+            const container = (docker as unknown as Docker).getContainer(metadata.containerId);
             await container.stop().catch(() => {});
             await container.remove().catch(() => {});
           }
@@ -255,86 +198,78 @@ export default function createSandboxesRouter(dependencies) {
           logger.error(`[SANDBOX_CREATE:${sandboxId}] Cleanup error:`, cleanupError);
         }
       }
-      
-      res.status(500).json({ 
-        error: error.message,
+
+      res.status(500).json({
+        error: (error as Error).message,
         sandboxId: sandboxId || null
       });
     }
   });
 
-  // Destroy sandbox
-  router.post('/:id/destroy', authenticateApiKey(), async (req, res) => {
+  router.post('/:id/destroy', authenticateApiKey(), async (req, res: Response): Promise<void> => {
     try {
       const { id } = req.params;
-      const userId = req.user.userId;
+      const userId = (req as AuthenticatedRequest).user.userId;
 
-      // Verify sandbox belongs to user
       const sandboxResult = await pool.query(
         'SELECT * FROM sandboxes WHERE id = $1 AND user_id = $2',
         [id, userId]
       );
 
       if (sandboxResult.rows.length === 0) {
-        return res.status(404).json({ error: 'Sandbox not found' });
+        res.status(404).json({ error: 'Sandbox not found' });
+        return;
       }
 
       const metadata = await getSandboxMetadata(id);
       if (!metadata) {
-        return res.status(404).json({ error: 'Sandbox metadata not found' });
+        res.status(404).json({ error: 'Sandbox metadata not found' });
+        return;
       }
 
-      // Close WebSocket connections
       if (agentConnections.has(id)) {
-        agentConnections.get(id).close();
+        agentConnections.get(id)!.close();
         agentConnections.delete(id);
       }
       await deleteAgentConnection(id);
 
-      // Stop and remove container
       try {
-        const container = docker.getContainer(metadata.containerId);
+        const container = (docker as unknown as Docker).getContainer(metadata.containerId);
         await container.stop();
         await container.remove();
       } catch (err) {
         logger.error('Error removing container:', err);
       }
 
-      // Clean up port mappings using Redis allocator
       await portAllocator.releaseAllPorts(id);
 
-      // Also clean up legacy port mappings if any
       if (metadata.exposedPorts) {
         for (const hostPort of Object.values(metadata.exposedPorts)) {
           await deletePortMapping(hostPort);
         }
       }
 
-      // Remove data volume
       await removeDataVolume(id);
 
-      // Update database
       await pool.query(
         'UPDATE sandboxes SET status = $1, destroyed_at = CURRENT_TIMESTAMP WHERE id = $2',
         ['destroyed', id]
       );
 
-      // Cleanup Redis
       await cleanupSandbox(id);
 
       logger.info(`Sandbox destroyed: ${id} by user ${userId}`);
       res.json({ success: true, sandboxId: id });
     } catch (error) {
       logger.error('Error destroying sandbox:', error);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: (error as Error).message });
     }
   });
 
-  // Get sandbox status
-  router.get('/:id/status', authenticateApiKey(), async (req, res) => {
+  router.get('/:id/status', authenticateApiKey(), async (req, res: Response): Promise<void> => {
     try {
       const { id } = req.params;
-      const userId = req.user.userId;
+      const userId = (req as AuthenticatedRequest).user.userId;
 
       const sandboxResult = await pool.query(
         'SELECT * FROM sandboxes WHERE id = $1 AND user_id = $2',
@@ -342,17 +277,17 @@ export default function createSandboxesRouter(dependencies) {
       );
 
       if (sandboxResult.rows.length === 0) {
-        return res.status(404).json({ error: 'Sandbox not found' });
+        res.status(404).json({ error: 'Sandbox not found' });
+        return;
       }
 
       const metadata = await getSandboxMetadata(id);
       const agentConnected = agentConnections.has(id);
-      
-      // Check container status if metadata exists
+
       let containerStatus = null;
       if (metadata && metadata.containerId) {
         try {
-          const container = docker.getContainer(metadata.containerId);
+          const container = (docker as unknown as Docker).getContainer(metadata.containerId);
           const containerInfo = await container.inspect();
           containerStatus = {
             running: containerInfo.State.Running,
@@ -360,7 +295,7 @@ export default function createSandboxesRouter(dependencies) {
             exitCode: containerInfo.State.ExitCode,
             error: containerInfo.State.Error
           };
-        } catch (error) {
+        } catch {
           containerStatus = { error: 'Container not found or removed' };
         }
       }
@@ -374,138 +309,93 @@ export default function createSandboxesRouter(dependencies) {
       });
     } catch (error) {
       logger.error('Error getting sandbox status:', error);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: (error as Error).message });
     }
   });
 
-  // Expose port
-  router.post('/:id/expose', authenticateApiKey(), async (req, res) => {
+  router.post('/:id/expose', authenticateApiKey(), async (req, res: Response): Promise<void> => {
     try {
       const { id } = req.params;
       const { containerPort } = req.body;
-      const userId = req.user.userId;
+      const userId = (req as AuthenticatedRequest).user.userId;
 
       if (!containerPort) {
-        return res.status(400).json({ error: 'containerPort is required' });
+        res.status(400).json({ error: 'containerPort is required' });
+        return;
       }
 
-      // Verify sandbox belongs to user
       const sandboxResult = await pool.query(
         'SELECT * FROM sandboxes WHERE id = $1 AND user_id = $2',
         [id, userId]
       );
 
       if (sandboxResult.rows.length === 0) {
-        return res.status(404).json({ error: 'Sandbox not found' });
+        res.status(404).json({ error: 'Sandbox not found' });
+        return;
       }
 
       const metadata = await getSandboxMetadata(id);
       if (!metadata) {
-        return res.status(404).json({ error: 'Sandbox metadata not found' });
+        res.status(404).json({ error: 'Sandbox metadata not found' });
+        return;
       }
 
-      // Check if port is already exposed
       if (metadata.exposedPorts && metadata.exposedPorts[containerPort]) {
         const hostPort = metadata.exposedPorts[containerPort];
-        return res.json({
+        res.json({
           sandboxId: id,
-          containerPort: parseInt(containerPort),
+          containerPort: parseInt(String(containerPort)),
           hostPort,
           url: `http://localhost:${hostPort}`
         });
+        return;
       }
 
-      // Allocate port using Redis-based allocator
       const hostPort = await portAllocator.allocatePort(id, containerPort);
-
-      // Ensure data volume exists for persistence
       const volumeName = await ensureDataVolume(id);
 
-      // Get container and recreate with port mapping
-      const container = docker.getContainer(metadata.containerId);
-      let containerInfo;
-      
-      try {
-        containerInfo = await container.inspect();
-      } catch (error) {
-        throw new Error('Container not found');
-      }
+      const container = (docker as unknown as Docker).getContainer(metadata.containerId);
+      const containerInfo = await container.inspect();
 
-      // Stop container if running
-      try {
-        const containerState = containerInfo.State;
-        if (containerState.Running) {
-          await container.stop();
-          // Wait for container to stop
-          let attempts = 0;
-          while (attempts < 10) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-            try {
-              const state = await container.inspect();
-              if (!state.State.Running) break;
-            } catch (e) {
-              break; // Container might be removed
-            }
-            attempts++;
+      if (containerInfo.State.Running) {
+        await container.stop();
+        let attempts = 0;
+        while (attempts < 10) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          try {
+            const state = await container.inspect();
+            if (!state.State.Running) break;
+          } catch {
+            break;
           }
-        }
-      } catch (error) {
-        if (!error.message.includes('not running') && !error.message.includes('No such container')) {
-          logger.warn('Warning stopping container:', error.message);
+          attempts++;
         }
       }
 
-      // Remove container
-      try {
-        await container.remove();
-        // Wait a bit for removal to complete
-        await new Promise(resolve => setTimeout(resolve, 500));
-      } catch (error) {
-        // Container might already be removed or in process
-        if (error.statusCode === 409 || error.message.includes('removal of container')) {
-          // Wait for removal to complete
-          let attempts = 0;
-          while (attempts < 10) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-            try {
-              await container.inspect();
-            } catch (e) {
-              if (e.statusCode === 404) break; // Container removed
-            }
-            attempts++;
-          }
-        } else if (error.statusCode !== 404) {
-          throw error;
-        }
-      }
+      await container.remove();
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
-      // Create port bindings
-      const portBindings = {};
+      const portBindings: Record<string, Array<{ HostPort: string }>> = {};
       portBindings[`${containerPort}/tcp`] = [{ HostPort: hostPort.toString() }];
-      
-      // Preserve existing exposed ports
+
       if (metadata.exposedPorts) {
-        Object.keys(metadata.exposedPorts).forEach(cp => {
-          portBindings[`${cp}/tcp`] = [{ HostPort: metadata.exposedPorts[cp].toString() }];
+        Object.keys(metadata.exposedPorts).forEach((cp) => {
+          portBindings[`${cp}/tcp`] = [{ HostPort: (metadata.exposedPorts![parseInt(cp)]).toString() }];
         });
       }
 
-      // Recreate container with port mapping - preserve original config
-      const originalHostConfig = containerInfo.HostConfig || {};
+      const originalHostConfig = containerInfo.HostConfig;
       const hostConfig = {
         NetworkMode: originalHostConfig.NetworkMode || 'bridge',
         AutoRemove: false,
         PortBindings: portBindings,
-        // Add data volume for persistence
         Binds: [`${volumeName}:/app/data:rw`],
-        // Preserve original resource limits
         Memory: originalHostConfig.Memory,
         MemorySwap: originalHostConfig.MemorySwap,
         MemoryReservation: originalHostConfig.MemoryReservation,
         CpuShares: originalHostConfig.CpuShares,
         CpuPeriod: originalHostConfig.CpuPeriod,
         CpuQuota: originalHostConfig.CpuQuota,
-        // Preserve security settings
         SecurityOpt: originalHostConfig.SecurityOpt,
         ReadonlyRootfs: false,
         Ulimits: originalHostConfig.Ulimits,
@@ -513,29 +403,27 @@ export default function createSandboxesRouter(dependencies) {
         Privileged: originalHostConfig.Privileged || false,
         PidsLimit: originalHostConfig.PidsLimit,
         OomKillDisable: originalHostConfig.OomKillDisable || false,
-        RestartPolicy: originalHostConfig.RestartPolicy || { Name: 'no' }
+        RestartPolicy: originalHostConfig.RestartPolicy || { Name: 'no' },
+        ExtraHosts: ORCHESTRATOR_HOST === 'host.docker.internal'
+          ? ['host.docker.internal:host-gateway']
+          : undefined
       };
 
-      if (ORCHESTRATOR_HOST === 'host.docker.internal') {
-        hostConfig.ExtraHosts = ['host.docker.internal:host-gateway'];
-      }
-
-      const exposedPorts = {};
-      Object.keys(portBindings).forEach(port => {
+      const exposedPorts: Record<string, object> = {};
+      Object.keys(portBindings).forEach((port) => {
         exposedPorts[port] = {};
       });
 
-      // Get original container environment and config
       const originalEnv = containerInfo.Config.Env || [];
-      const originalConfig = containerInfo.Config || {};
-      
-      const newContainer = await docker.createContainer({
+      const originalConfig = containerInfo.Config;
+
+      const newContainer = await (docker as unknown as Docker).createContainer({
         Image: AGENT_IMAGE,
         name: `sandbox-${id}`,
         Env: originalEnv,
         HostConfig: hostConfig,
         ExposedPorts: exposedPorts,
-        WorkingDir: originalConfig.WorkingDir || '/app', // Preserve working directory
+        WorkingDir: originalConfig.WorkingDir || '/app',
         Tty: originalConfig.Tty || false,
         OpenStdin: originalConfig.OpenStdin !== undefined ? originalConfig.OpenStdin : true,
         StdinOnce: originalConfig.StdinOnce || false,
@@ -544,50 +432,49 @@ export default function createSandboxesRouter(dependencies) {
 
       await newContainer.start();
 
-      // Update metadata
-      metadata.exposedPorts = metadata.exposedPorts || {};
-      metadata.exposedPorts[containerPort] = hostPort;
-      metadata.containerId = newContainer.id;
-      await setSandboxMetadata(id, metadata);
+      const updatedMetadata: SandboxMetadata = {
+        ...metadata,
+        exposedPorts: { ...metadata.exposedPorts, [containerPort]: hostPort },
+        containerId: newContainer.id
+      };
+      await setSandboxMetadata(id, updatedMetadata);
       await setPortMapping(hostPort, id);
 
-      // Wait for agent to reconnect (up to 30 seconds)
       let attempts = 0;
       const maxAttempts = 60;
       while (attempts < maxAttempts && !agentConnections.has(id)) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise((resolve) => setTimeout(resolve, 500));
         attempts++;
       }
 
       logger.info(`Port exposed: ${containerPort} -> ${hostPort} for sandbox ${id}`);
-      
+
       res.json({
         sandboxId: id,
-        containerPort: parseInt(containerPort),
+        containerPort: parseInt(String(containerPort)),
         hostPort,
         url: `http://localhost:${hostPort}`,
         agentReconnected: agentConnections.has(id)
       });
     } catch (error) {
       logger.error('Error exposing port:', error);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: (error as Error).message });
     }
   });
 
-  // Get exposed ports
-  router.get('/:id/ports', authenticateApiKey(), async (req, res) => {
+  router.get('/:id/ports', authenticateApiKey(), async (req, res: Response): Promise<void> => {
     try {
       const { id } = req.params;
-      const userId = req.user.userId;
+      const userId = (req as AuthenticatedRequest).user.userId;
 
-      // Verify sandbox belongs to user
       const sandboxResult = await pool.query(
         'SELECT * FROM sandboxes WHERE id = $1 AND user_id = $2',
         [id, userId]
       );
 
       if (sandboxResult.rows.length === 0) {
-        return res.status(404).json({ error: 'Sandbox not found' });
+        res.status(404).json({ error: 'Sandbox not found' });
+        return;
       }
 
       const metadata = await getSandboxMetadata(id);
@@ -600,41 +487,38 @@ export default function createSandboxesRouter(dependencies) {
       res.json({ sandboxId: id, ports });
     } catch (error) {
       logger.error('Error getting ports:', error);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: (error as Error).message });
     }
   });
 
-  // Get sandbox resource usage
-  router.get('/:id/stats', authenticateApiKey(), async (req, res) => {
+  router.get('/:id/stats', authenticateApiKey(), async (req, res: Response): Promise<void> => {
     try {
       const { id } = req.params;
-      const userId = req.user.userId;
+      const userId = (req as AuthenticatedRequest).user.userId;
 
-      // Verify sandbox belongs to user
       const sandboxResult = await pool.query(
         'SELECT * FROM sandboxes WHERE id = $1 AND user_id = $2',
         [id, userId]
       );
 
       if (sandboxResult.rows.length === 0) {
-        return res.status(404).json({ error: 'Sandbox not found' });
+        res.status(404).json({ error: 'Sandbox not found' });
+        return;
       }
 
       const metadata = await getSandboxMetadata(id);
       if (!metadata || !metadata.containerId) {
-        return res.status(404).json({ error: 'Container not found' });
+        res.status(404).json({ error: 'Container not found' });
+        return;
       }
 
-      // Get container stats
       const stats = await resourceManager.getContainerStats(metadata.containerId);
       if (!stats) {
-        return res.status(503).json({ error: 'Unable to retrieve container stats' });
+        res.status(503).json({ error: 'Unable to retrieve container stats' });
+        return;
       }
 
-      // Check for resource violations
       const violation = await resourceManager.checkResourceViolation(id, metadata.containerId, metadata.tier);
-
-      // Get optimization recommendations
       const recommendations = await containerOptimizer.getOptimizationRecommendations(metadata.containerId);
 
       res.json({
@@ -647,18 +531,16 @@ export default function createSandboxesRouter(dependencies) {
       });
     } catch (error) {
       logger.error('Error getting sandbox stats:', error);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: (error as Error).message });
     }
   });
 
-  // Get user's sandbox quota and usage
-  router.get('/quota/usage', authenticateApiKey(), async (req, res) => {
+  router.get('/quota/usage', authenticateApiKey(), async (req, res: Response): Promise<void> => {
     try {
-      const userId = req.user.userId;
-      const apiKeyId = req.user.apiKeyId;
-      const userTier = req.user.tier || 'free';
+      const userId = (req as AuthenticatedRequest).user.userId;
+      const apiKeyId = (req as AuthenticatedRequest).user.apiKeyId!;
+      const userTier = ((req as AuthenticatedRequest).user.tier || 'free') as UserTier;
 
-      // Get current sandbox count
       const userSandboxCount = await pool.query(
         'SELECT COUNT(*) as count FROM sandboxes WHERE user_id = $1 AND status = $2',
         [userId, 'active']
@@ -669,15 +551,12 @@ export default function createSandboxesRouter(dependencies) {
         [apiKeyId, 'active']
       );
 
-      // Get tier limits
-      const tierLimits = resourceManager.getTierLimits ? 
-        resourceManager.getTierLimits(userTier) : 
-        { maxSandboxes: RESOURCE_LIMITS.USER.MAX_SANDBOXES_PER_USER };
+      const tierLimits = resourceManager.getTierLimits(userTier);
 
       res.json({
         usage: {
-          activeSandboxes: parseInt(userSandboxCount.rows[0].count),
-          apiKeySandboxes: parseInt(apiKeySandboxCount.rows[0].count)
+          activeSandboxes: parseInt(userSandboxCount.rows[0].count as string),
+          apiKeySandboxes: parseInt(apiKeySandboxCount.rows[0].count as string)
         },
         limits: {
           maxSandboxes: tierLimits.maxSandboxes,
@@ -690,51 +569,48 @@ export default function createSandboxesRouter(dependencies) {
       });
     } catch (error) {
       logger.error('Error getting quota usage:', error);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: (error as Error).message });
     }
   });
 
-  // System stats endpoint (admin only)
-  router.get('/system/stats', authenticateApiKey(), async (req, res) => {
+  router.get('/system/stats', authenticateApiKey(), async (req, res: Response): Promise<void> => {
     try {
-      // Check if user has admin privileges (you might want to add proper admin check)
-      const isAdmin = req.user.email?.endsWith('@insien.com') || process.env.NODE_ENV === 'development';
-      
+      const isAdmin = (req as AuthenticatedRequest).user.email?.endsWith('@insien.com') || process.env.NODE_ENV === 'development';
+
       if (!isAdmin) {
-        return res.status(403).json({ error: 'Admin access required' });
+        res.status(403).json({ error: 'Admin access required' });
+        return;
       }
 
       const systemStats = await resourceManager.getSystemStats();
-      
-      // Get total sandboxes by status
+
       const statusStats = await pool.query(`
-        SELECT status, COUNT(*) as count 
-        FROM sandboxes 
+        SELECT status, COUNT(*) as count
+        FROM sandboxes
         GROUP BY status
       `);
 
       res.json({
         system: systemStats,
-        sandboxes: statusStats.rows.reduce((acc, row) => {
-          acc[row.status] = parseInt(row.count);
+        sandboxes: statusStats.rows.reduce((acc: Record<string, number>, row) => {
+          acc[row.status as string] = parseInt(row.count as string);
           return acc;
         }, {}),
         limits: RESOURCE_LIMITS
       });
     } catch (error) {
       logger.error('Error getting system stats:', error);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: (error as Error).message });
     }
   });
 
-  // Cleanup endpoint (admin only)
-  router.post('/system/cleanup', authenticateApiKey(), async (req, res) => {
+  router.post('/system/cleanup', authenticateApiKey(), async (req, res: Response): Promise<void> => {
     try {
-      // Check if user has admin privileges
-      const isAdmin = req.user.email?.endsWith('@insien.com') || process.env.NODE_ENV === 'development';
-      
+      const isAdmin = (req as AuthenticatedRequest).user.email?.endsWith('@insien.com') || process.env.NODE_ENV === 'development';
+
       if (!isAdmin) {
-        return res.status(403).json({ error: 'Admin access required' });
+        res.status(403).json({ error: 'Admin access required' });
+        return;
       }
 
       const cleanedSandboxes = await resourceManager.cleanupExpiredSandboxes();
@@ -749,50 +625,52 @@ export default function createSandboxesRouter(dependencies) {
       });
     } catch (error) {
       logger.error('Error during cleanup:', error);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: (error as Error).message });
     }
   });
 
-  router.post('/execute', authenticateApiKey(), strictLimiter, async (req, res) => {
-    let sandboxId = null;
-    let container = null;
-    let ws = null;
+  router.post('/execute', authenticateApiKey(), strictLimiter, async (req, res: Response): Promise<void> => {
+    let sandboxId: string | null = null;
+    let container: Awaited<ReturnType<Docker['createContainer']>> | null = null;
+    let ws: WebSocket | null = null;
 
     try {
-      const { code, language, timeout: execTimeoutMs, input } = req.body;
-      const userId = req.user.userId;
-      const apiKeyId = req.user.apiKeyId;
+      const { code, language, timeout: execTimeoutMs } = req.body;
+      const userId = (req as AuthenticatedRequest).user.userId;
+      const apiKeyId = (req as AuthenticatedRequest).user.apiKeyId!;
 
       if (!code || !language) {
-        return res.status(400).json({ error: 'code and language are required' });
+        res.status(400).json({ error: 'code and language are required' });
+        return;
       }
 
-      // Normalize and validate language
       const normalizedLang = normalizeLanguage(language);
       if (!isLanguageSupported(normalizedLang)) {
-        return res.status(400).json({
+        res.status(400).json({
           error: `Unsupported language: ${language}`,
           supportedLanguages: ['javascript', 'python', 'java', 'cpp', 'c', 'go', 'rust']
         });
+        return;
       }
 
-      // Get language-specific configuration
       const langConfig = getLanguageConfig(normalizedLang);
       if (!langConfig) {
-        return res.status(400).json({ error: `No configuration found for language: ${language}` });
+        res.status(400).json({ error: `No configuration found for language: ${language}` });
+        return;
       }
 
       sandboxId = uuidv4();
-      const userTier = req.body.tier || 'free';
+      const userTier = (req.body.tier || 'free') as UserTier;
 
       logger.info(`[CODE_EXECUTE:${sandboxId}] Executing ${normalizedLang} code for user ${userId}`);
 
       const canCreate = await resourceManager.canCreateSandbox(userId, apiKeyId, userTier);
       if (!canCreate.allowed) {
-        return res.status(429).json({
+        res.status(429).json({
           error: 'Sandbox creation limit exceeded',
           reason: canCreate.reason
         });
+        return;
       }
 
       const agentToken = jwt.sign(
@@ -801,18 +679,17 @@ export default function createSandboxesRouter(dependencies) {
         { expiresIn: '1h' }
       );
 
-      // Get language-specific Docker image
       const languageImage = getImageForLanguage(normalizedLang);
       logger.info(`[CODE_EXECUTE:${sandboxId}] Using image: ${languageImage} for ${normalizedLang}`);
 
-      let containerConfig = resourceManager.getContainerConfig(sandboxId, agentToken, userTier);
+      const containerConfig = resourceManager.getContainerConfig(sandboxId, agentToken, userTier);
       containerConfig.Image = languageImage;
 
       if (ORCHESTRATOR_HOST === 'host.docker.internal') {
         containerConfig.HostConfig.ExtraHosts = ['host.docker.internal:host-gateway'];
       }
 
-      container = await docker.createContainer(containerConfig);
+      container = await (docker as unknown as Docker).createContainer(containerConfig);
       await container.start();
 
       await pool.query(
@@ -835,35 +712,33 @@ export default function createSandboxesRouter(dependencies) {
         execution: true,
         language: normalizedLang,
         image: languageImage,
-        allowUnauthenticated: true // Allow internal WS connection
+        allowUnauthenticated: true
       });
 
-      // Wait for agent to start
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
 
-      // Connect to WebSocket (internal connection, no auth needed)
       ws = new WebSocket(`${process.env.WS_URL || 'ws://localhost:3001'}/client/${sandboxId}`);
 
-      await new Promise((resolve, reject) => {
+      await new Promise<void>((resolve, reject) => {
         const connectionTimeout = setTimeout(() => reject(new Error('WebSocket connection timeout')), 10000);
-        ws.on('open', () => {
+        ws!.on('open', () => {
           clearTimeout(connectionTimeout);
           resolve();
         });
-        ws.on('error', reject);
+        ws!.on('error', reject);
       });
 
       const fileName = `main.${langConfig.extension}`;
       const execTimeout = execTimeoutMs || 30000;
 
-      const writeFile = (path, content) => {
+      const writeFile = (path: string, content: string): Promise<unknown> => {
         return new Promise((resolve, reject) => {
           const id = uuidv4();
-          ws.send(JSON.stringify({ id, type: 'write', path, content }));
-          const handler = (message) => {
+          ws!.send(JSON.stringify({ id, type: 'write', path, content }));
+          const handler = (message: WebSocket.Data) => {
             const data = JSON.parse(message.toString());
             if (data.id === id) {
-              ws.removeListener('message', handler);
+              ws!.removeListener('message', handler);
               if (data.type === 'error') {
                 reject(new Error(data.error));
               } else {
@@ -871,22 +746,22 @@ export default function createSandboxesRouter(dependencies) {
               }
             }
           };
-          ws.on('message', handler);
+          ws!.on('message', handler);
           setTimeout(() => {
-            ws.removeListener('message', handler);
+            ws!.removeListener('message', handler);
             reject(new Error('Write timeout'));
           }, 5000);
         });
       };
 
-      const runCommand = (cmd, args) => {
+      const runCommand = (cmd: string, args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
         return new Promise((resolve, reject) => {
           const id = uuidv4();
-          ws.send(JSON.stringify({ id, type: 'exec', cmd, args }));
-          const handler = (message) => {
+          ws!.send(JSON.stringify({ id, type: 'exec', cmd, args }));
+          const handler = (message: WebSocket.Data) => {
             const data = JSON.parse(message.toString());
             if (data.id === id) {
-              ws.removeListener('message', handler);
+              ws!.removeListener('message', handler);
               if (data.type === 'error') {
                 reject(new Error(data.error));
               } else {
@@ -894,9 +769,9 @@ export default function createSandboxesRouter(dependencies) {
               }
             }
           };
-          ws.on('message', handler);
+          ws!.on('message', handler);
           setTimeout(() => {
-            ws.removeListener('message', handler);
+            ws!.removeListener('message', handler);
             reject(new Error('Execution timeout'));
           }, execTimeout);
         });
@@ -904,16 +779,14 @@ export default function createSandboxesRouter(dependencies) {
 
       await writeFile(fileName, code);
 
-      let result;
-      let compileResult = null;
+      let result: { stdout: string; stderr: string; exitCode: number };
+      let compileResult: { stdout: string; stderr: string; exitCode: number } | null = null;
 
-      // Handle compiled languages
       if (langConfig.compile) {
         if (langConfig.command === 'javac') {
-          // Java compilation
           compileResult = await runCommand(langConfig.command, [fileName]);
           if (compileResult.exitCode !== 0) {
-            return res.json({
+            res.json({
               success: false,
               error: 'Compilation failed',
               language: normalizedLang,
@@ -921,14 +794,14 @@ export default function createSandboxesRouter(dependencies) {
               stderr: compileResult.stderr,
               exitCode: compileResult.exitCode
             });
+            return;
           }
           const className = fileName.replace('.java', '');
-          result = await runCommand(langConfig.runCommand, [...(langConfig.runArgs || []), className]);
+          result = await runCommand(langConfig.runCommand!, [...(langConfig.runArgs || []), className]);
         } else {
-          // C++, Rust compilation
           compileResult = await runCommand(langConfig.command, [...langConfig.args, fileName]);
           if (compileResult.exitCode !== 0) {
-            return res.json({
+            res.json({
               success: false,
               error: 'Compilation failed',
               language: normalizedLang,
@@ -936,11 +809,11 @@ export default function createSandboxesRouter(dependencies) {
               stderr: compileResult.stderr,
               exitCode: compileResult.exitCode
             });
+            return;
           }
-          result = await runCommand('sh', ['-c', langConfig.runCommand]);
+          result = await runCommand('sh', ['-c', langConfig.runCommand!]);
         }
       } else {
-        // Interpreted languages (JavaScript, Python, Go)
         result = await runCommand(langConfig.command, [...langConfig.args, fileName]);
       }
 
@@ -958,9 +831,8 @@ export default function createSandboxesRouter(dependencies) {
       });
     } catch (error) {
       logger.error(`[CODE_EXECUTE:${sandboxId || 'unknown'}] Error:`, error);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: (error as Error).message });
     } finally {
-      // Cleanup resources
       try {
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.close();
@@ -984,4 +856,3 @@ export default function createSandboxesRouter(dependencies) {
 
   return router;
 }
-

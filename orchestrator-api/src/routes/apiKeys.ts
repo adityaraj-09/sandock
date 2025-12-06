@@ -1,15 +1,14 @@
-import express from 'express';
+import { Router, Response } from 'express';
 import { requireAuth } from '../services/auth.js';
 import { createApiKey, getUserApiKeys, revokeApiKey } from '../services/apiKeys.js';
 import { z } from 'zod';
+import type { AuthenticatedRequest } from '../types/index.js';
 
-const router = express.Router();
+const router = Router();
 
-// All routes require authentication
 router.use(requireAuth());
 
-// Create API key
-router.post('/', async (req, res) => {
+router.post('/', async (req, res: Response): Promise<void> => {
   try {
     const schema = z.object({
       name: z.string().min(1).max(255).optional(),
@@ -17,7 +16,7 @@ router.post('/', async (req, res) => {
     });
 
     const { name, expiresInDays } = schema.parse(req.body);
-    const userId = req.user.userId;
+    const userId = (req as AuthenticatedRequest).user.userId;
 
     const apiKey = await createApiKey(userId, name || 'Default API Key', expiresInDays);
 
@@ -25,7 +24,7 @@ router.post('/', async (req, res) => {
       success: true,
       apiKey: {
         id: apiKey.id,
-        key: apiKey.key, // Only returned on creation
+        key: apiKey.key,
         prefix: apiKey.prefix,
         name: apiKey.name,
         createdAt: apiKey.createdAt,
@@ -35,17 +34,17 @@ router.post('/', async (req, res) => {
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return res.status(400).json({ error: 'Invalid request data', details: error.errors });
+      res.status(400).json({ error: 'Invalid request data', details: error.errors });
+      return;
     }
     console.error('Error creating API key:', error);
     res.status(500).json({ error: 'Failed to create API key' });
   }
 });
 
-// List user's API keys
-router.get('/', async (req, res) => {
+router.get('/', async (req, res: Response): Promise<void> => {
   try {
-    const userId = req.user.userId;
+    const userId = (req as AuthenticatedRequest).user.userId;
     const apiKeys = await getUserApiKeys(userId);
 
     res.json({
@@ -58,10 +57,9 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Revoke API key
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', async (req, res: Response): Promise<void> => {
   try {
-    const userId = req.user.userId;
+    const userId = (req as unknown as AuthenticatedRequest).user.userId;
     const apiKeyId = req.params.id;
 
     const revoked = await revokeApiKey(userId, apiKeyId);
@@ -78,4 +76,3 @@ router.delete('/:id', async (req, res) => {
 });
 
 export default router;
-

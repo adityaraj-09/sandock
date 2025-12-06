@@ -1,15 +1,16 @@
 import pg from 'pg';
-const { Pool } = pg;
 import dotenv from 'dotenv';
 
 dotenv.config();
+
+const { Pool } = pg;
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
   max: 20,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionTimeoutMillis: 2000
 });
 
 pool.on('error', (err) => {
@@ -19,8 +20,7 @@ pool.on('error', (err) => {
 
 export default pool;
 
-// Helper functions
-export async function query(text, params) {
+export async function query(text: string, params?: unknown[]): Promise<pg.QueryResult> {
   const start = Date.now();
   try {
     const res = await pool.query(text, params);
@@ -28,12 +28,11 @@ export async function query(text, params) {
     console.log('Executed query', { text, duration, rows: res.rowCount });
     return res;
   } catch (error) {
-    console.error('Database query error', { text, error: error.message });
+    console.error('Database query error', { text, error: (error as Error).message });
     throw error;
   }
 }
 
-export async function getClient() {
+export async function getClient(): Promise<pg.PoolClient> {
   return await pool.connect();
 }
-

@@ -1,7 +1,16 @@
+import type { Request, Response, NextFunction } from 'express';
 import { logger } from '../utils/logger.js';
 
-// Global error handler middleware
-export function errorHandler(err, req, res, next) {
+interface AppError extends Error {
+  status?: number;
+}
+
+export function errorHandler(
+  err: AppError,
+  req: Request,
+  res: Response,
+  _next: NextFunction
+): void {
   logger.error('Request error:', {
     method: req.method,
     path: req.path,
@@ -9,9 +18,8 @@ export function errorHandler(err, req, res, next) {
     stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
   });
 
-  // Don't leak error details in production
-  const message = process.env.NODE_ENV === 'production' 
-    ? 'Internal server error' 
+  const message = process.env.NODE_ENV === 'production'
+    ? 'Internal server error'
     : err.message;
 
   res.status(err.status || 500).json({
@@ -20,11 +28,9 @@ export function errorHandler(err, req, res, next) {
   });
 }
 
-// 404 handler
-export function notFoundHandler(req, res) {
+export function notFoundHandler(req: Request, res: Response): void {
   res.status(404).json({
     error: 'Route not found',
     path: req.path
   });
 }
-

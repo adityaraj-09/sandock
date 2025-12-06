@@ -1,32 +1,33 @@
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes } from 'crypto';
 import bcrypt from 'bcrypt';
 import pool from '../db/index.js';
+import type { ApiKeyCreateResult, ApiKeyValidationResult } from '../types/index.js';
 
 const SALT_ROUNDS = 12;
 
-// Generate a new API key
-export function generateApiKey() {
+export function generateApiKey(): { key: string; prefix: string } {
   const key = `isk_${randomBytes(32).toString('hex')}`;
-  const prefix = key.substring(0, 12); // isk_xxxxxxxx
+  const prefix = key.substring(0, 12);
   return { key, prefix };
 }
 
-// Hash API key for storage
-export async function hashApiKey(key) {
+export async function hashApiKey(key: string): Promise<string> {
   return await bcrypt.hash(key, SALT_ROUNDS);
 }
 
-// Verify API key
-export async function verifyApiKey(key, hash) {
+export async function verifyApiKey(key: string, hash: string): Promise<boolean> {
   return await bcrypt.compare(key, hash);
 }
 
-// Create API key for user
-export async function createApiKey(userId, name, expiresInDays = null) {
+export async function createApiKey(
+  userId: string,
+  name: string,
+  expiresInDays: number | null = null
+): Promise<ApiKeyCreateResult> {
   const { key, prefix } = generateApiKey();
   const keyHash = await hashApiKey(key);
-  
-  const expiresAt = expiresInDays 
+
+  const expiresAt = expiresInDays
     ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
     : null;
 
@@ -41,7 +42,7 @@ export async function createApiKey(userId, name, expiresInDays = null) {
 
     return {
       id: result.rows[0].id,
-      key, // Return full key only once
+      key,
       prefix: result.rows[0].key_prefix,
       name: result.rows[0].name,
       createdAt: result.rows[0].created_at,
@@ -52,8 +53,18 @@ export async function createApiKey(userId, name, expiresInDays = null) {
   }
 }
 
-// Get API keys for user
-export async function getUserApiKeys(userId) {
+export interface UserApiKey {
+  id: string;
+  prefix: string;
+  name: string;
+  lastUsedAt?: Date;
+  expiresAt?: Date;
+  revokedAt?: Date;
+  createdAt: Date;
+  isActive: boolean;
+}
+
+export async function getUserApiKeys(userId: string): Promise<UserApiKey[]> {
   const client = await pool.connect();
   try {
     const result = await client.query(
@@ -64,7 +75,7 @@ export async function getUserApiKeys(userId) {
       [userId]
     );
 
-    return result.rows.map(row => ({
+    return result.rows.map((row) => ({
       id: row.id,
       prefix: row.key_prefix,
       name: row.name,
@@ -79,8 +90,7 @@ export async function getUserApiKeys(userId) {
   }
 }
 
-// Revoke API key
-export async function revokeApiKey(userId, apiKeyId) {
+export async function revokeApiKey(userId: string, apiKeyId: string): Promise<boolean> {
   const client = await pool.connect();
   try {
     const result = await client.query(
@@ -97,15 +107,13 @@ export async function revokeApiKey(userId, apiKeyId) {
   }
 }
 
-// Validate API key and get user
-export async function validateApiKey(apiKey) {
+export async function validateApiKey(apiKey: string): Promise<ApiKeyValidationResult | null> {
   if (!apiKey || !apiKey.startsWith('isk_')) {
     return null;
   }
 
   const client = await pool.connect();
   try {
-    // Get all active API keys (not revoked, not expired)
     const result = await client.query(
       `SELECT ak.id, ak.user_id, ak.key_hash, ak.key_prefix, u.email
        FROM api_keys ak
@@ -116,11 +124,9 @@ export async function validateApiKey(apiKey) {
       [apiKey.substring(0, 12)]
     );
 
-    // Verify the key against all matching prefixes
     for (const row of result.rows) {
       const isValid = await verifyApiKey(apiKey, row.key_hash);
       if (isValid) {
-        // Update last_used_at
         await client.query(
           'UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = $1',
           [row.id]
@@ -139,4 +145,3 @@ export async function validateApiKey(apiKey) {
     client.release();
   }
 }
-

@@ -1,19 +1,18 @@
-import express from 'express';
+import { Router, Response } from 'express';
 import { requireAuth } from '../services/auth.js';
 import pool from '../db/index.js';
+import type { AuthenticatedRequest } from '../types/index.js';
 
-const router = express.Router();
+const router = Router();
 
-// All routes require authentication
 router.use(requireAuth());
 
-// Get current user profile
-router.get('/me', async (req, res) => {
+router.get('/me', async (req, res: Response): Promise<void> => {
   try {
-    const userId = req.user.userId;
+    const userId = (req as AuthenticatedRequest).user.userId;
 
     const result = await pool.query(
-      `SELECT 
+      `SELECT
         id,
         email,
         first_name,
@@ -24,13 +23,14 @@ router.get('/me', async (req, res) => {
         metadata,
         created_at,
         updated_at
-       FROM users 
+       FROM users
        WHERE id = $1`,
       [userId]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+      res.status(404).json({ error: 'User not found' });
+      return;
     }
 
     const user = result.rows[0];
@@ -55,15 +55,13 @@ router.get('/me', async (req, res) => {
   }
 });
 
-// Update user profile (limited fields that can be updated)
-router.patch('/me', async (req, res) => {
+router.patch('/me', async (req, res: Response): Promise<void> => {
   try {
-    const userId = req.user.userId;
+    const userId = (req as AuthenticatedRequest).user.userId;
     const { firstName, lastName, username, phoneNumber, metadata } = req.body;
 
-    // Allow updating user profile fields
-    const updateFields = [];
-    const updateValues = [];
+    const updateFields: string[] = [];
+    const updateValues: unknown[] = [userId];
     let paramCount = 1;
 
     if (firstName !== undefined) {
@@ -88,22 +86,21 @@ router.patch('/me', async (req, res) => {
     }
 
     if (updateFields.length === 0) {
-      return res.status(400).json({ error: 'No fields to update' });
+      res.status(400).json({ error: 'No fields to update' });
+      return;
     }
 
-    updateValues.push(userId);
-    const userIdParam = updateValues.length;
-
     const result = await pool.query(
-      `UPDATE users 
+      `UPDATE users
        SET ${updateFields.join(', ')}
-       WHERE id = $${userIdParam}
+       WHERE id = $1
        RETURNING id, email, first_name, last_name, username, image_url, phone_number, metadata, updated_at`,
       updateValues
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+      res.status(404).json({ error: 'User not found' });
+      return;
     }
 
     const user = result.rows[0];
@@ -127,14 +124,13 @@ router.patch('/me', async (req, res) => {
   }
 });
 
-// Get user's sandboxes
-router.get('/me/sandboxes', async (req, res) => {
+router.get('/me/sandboxes', async (req, res: Response): Promise<void> => {
   try {
-    const userId = req.user.userId;
-    const { status, limit = 50, offset = 0 } = req.query;
+    const userId = (req as AuthenticatedRequest).user.userId;
+    const { status, limit = '50', offset = '0' } = req.query;
 
     let query = `
-      SELECT 
+      SELECT
         id,
         status,
         created_at,
@@ -143,7 +139,7 @@ router.get('/me/sandboxes', async (req, res) => {
       FROM sandboxes
       WHERE user_id = $1
     `;
-    const params = [userId];
+    const params: unknown[] = [userId];
     let paramCount = 1;
 
     if (status) {
@@ -152,13 +148,13 @@ router.get('/me/sandboxes', async (req, res) => {
     }
 
     query += ` ORDER BY created_at DESC LIMIT $${++paramCount} OFFSET $${++paramCount}`;
-    params.push(parseInt(limit), parseInt(offset));
+    params.push(parseInt(limit as string), parseInt(offset as string));
 
     const result = await pool.query(query, params);
 
     res.json({
       success: true,
-      sandboxes: result.rows.map(row => ({
+      sandboxes: result.rows.map((row) => ({
         id: row.id,
         status: row.status,
         createdAt: row.created_at,
@@ -174,4 +170,3 @@ router.get('/me/sandboxes', async (req, res) => {
 });
 
 export default router;
-

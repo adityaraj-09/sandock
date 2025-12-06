@@ -1,57 +1,88 @@
 import { logger } from '../utils/logger.js';
 import { RESOURCE_LIMITS, getResourceLimitsForTier, getTierLimits } from '../config/limits.js';
-import { getSandboxMetadata, setSandboxMetadata } from './redis.js';
+import { getSandboxMetadata } from './redis.js';
+import type {
+  Docker,
+  PgPool,
+  ContainerConfig,
+  ContainerStats,
+  ResourceViolation,
+  UserTier,
+  TierLimits
+} from '../types/index.js';
+
+interface CanCreateResult {
+  allowed: boolean;
+  reason?: string;
+}
+
+interface SystemStats {
+  totalContainers: number;
+  totalMemoryUsage: number;
+  totalCpuUsage: number;
+  lastUpdated?: string;
+}
+
+interface ViolationResult {
+  violation: boolean;
+  violations: ResourceViolation[];
+  stats?: ContainerStats;
+}
 
 export class ResourceManager {
-  constructor(docker, pool) {
+  private docker: Docker;
+  private pool: PgPool;
+  private systemStats: SystemStats = {
+    totalContainers: 0,
+    totalMemoryUsage: 0,
+    totalCpuUsage: 0
+  };
+
+  constructor(docker: Docker, pool: PgPool) {
     this.docker = docker;
     this.pool = pool;
-    this.systemStats = {
-      totalContainers: 0,
-      totalMemoryUsage: 0,
-      totalCpuUsage: 0
-    };
   }
 
-  // Check if user can create a new sandbox
-  async canCreateSandbox(userId, apiKeyId, userTier = 'free') {
+  async canCreateSandbox(
+    userId: string,
+    apiKeyId: string,
+    userTier: UserTier = 'free'
+  ): Promise<CanCreateResult> {
     try {
-      // Check user sandbox count
       const userSandboxCount = await this.pool.query(
         'SELECT COUNT(*) as count FROM sandboxes WHERE user_id = $1 AND status = $2',
         [userId, 'active']
       );
-      
-      const tierLimits = getResourceLimitsForTier(userTier);
-      const maxSandboxes = tierLimits.maxSandboxes || RESOURCE_LIMITS.USER.MAX_SANDBOXES_PER_USER;
-      
-      if (parseInt(userSandboxCount.rows[0].count) >= maxSandboxes) {
+
+      const _tierLimits = getResourceLimitsForTier(userTier);
+      const tierInfo = getTierLimits(userTier);
+      const maxSandboxes = tierInfo.maxSandboxes || RESOURCE_LIMITS.USER.MAX_SANDBOXES_PER_USER;
+
+      if (parseInt(userSandboxCount.rows[0].count as string) >= maxSandboxes) {
         return {
           allowed: false,
           reason: `Maximum sandboxes limit reached (${maxSandboxes})`
         };
       }
 
-      // Check API key sandbox count
       const apiKeySandboxCount = await this.pool.query(
         'SELECT COUNT(*) as count FROM sandboxes WHERE api_key_id = $1 AND status = $2',
         [apiKeyId, 'active']
       );
-      
-      if (parseInt(apiKeySandboxCount.rows[0].count) >= RESOURCE_LIMITS.USER.MAX_SANDBOXES_PER_API_KEY) {
+
+      if (parseInt(apiKeySandboxCount.rows[0].count as string) >= RESOURCE_LIMITS.USER.MAX_SANDBOXES_PER_API_KEY) {
         return {
           allowed: false,
           reason: `API key sandbox limit reached (${RESOURCE_LIMITS.USER.MAX_SANDBOXES_PER_API_KEY})`
         };
       }
 
-      // Check system-wide limits
       const totalSandboxCount = await this.pool.query(
         'SELECT COUNT(*) as count FROM sandboxes WHERE status = $1',
         ['active']
       );
-      
-      if (parseInt(totalSandboxCount.rows[0].count) >= RESOURCE_LIMITS.SYSTEM.MAX_TOTAL_SANDBOXES) {
+
+      if (parseInt(totalSandboxCount.rows[0].count as string) >= RESOURCE_LIMITS.SYSTEM.MAX_TOTAL_SANDBOXES) {
         return {
           allowed: false,
           reason: 'System capacity limit reached. Please try again later.'
@@ -68,11 +99,10 @@ export class ResourceManager {
     }
   }
 
-  // Get optimized container configuration
-  getContainerConfig(sandboxId, agentToken, userTier = 'free') {
+  getContainerConfig(sandboxId: string, agentToken: string, userTier: UserTier = 'free'): ContainerConfig {
     const tierLimits = getResourceLimitsForTier(userTier);
-    const tierInfo = getTierLimits(userTier); // Get tier info for maxMemoryMB
-    
+    const tierInfo = getTierLimits(userTier);
+
     const hostConfig = {
       NetworkMode: 'bridge',
       AutoRemove: false,
@@ -89,22 +119,13 @@ export class ResourceManager {
       Privileged: false,
       PidsLimit: 100,
       OomKillDisable: false,
-      RestartPolicy: {
-        Name: 'no'
-      }
+      RestartPolicy: { Name: 'no' }
     };
-
-    // Add storage driver options if supported
-    if (RESOURCE_LIMITS.CONTAINER.STORAGE_OPT) {
-      hostConfig.StorageOpt = RESOURCE_LIMITS.CONTAINER.STORAGE_OPT;
-    }
 
     return {
       name: `sandbox-${sandboxId}`,
       HostConfig: hostConfig,
-      
       WorkingDir: '/app',
-      
       Env: [
         `ORCHESTRATOR_URL=ws://${process.env.ORCHESTRATOR_HOST}:${process.env.WS_PORT}`,
         `AGENT_TOKEN=${agentToken}`,
@@ -113,7 +134,6 @@ export class ResourceManager {
         `CPU_SHARES=${tierInfo.maxCpuShares}`,
         `SANDBOX_TIER=${userTier}`
       ],
-      
       NetworkDisabled: false,
       Tty: false,
       OpenStdin: true,
@@ -127,22 +147,19 @@ export class ResourceManager {
     };
   }
 
-  // Monitor container resource usage
-  async getContainerStats(containerId) {
+  async getContainerStats(containerId: string): Promise<ContainerStats | null> {
     try {
       const container = this.docker.getContainer(containerId);
       const stats = await container.stats({ stream: false });
-      
-      // Calculate memory usage percentage
+
       const memoryUsage = stats.memory_stats.usage || 0;
       const memoryLimit = stats.memory_stats.limit || 0;
       const memoryPercent = memoryLimit > 0 ? (memoryUsage / memoryLimit) * 100 : 0;
-      
-      // Calculate CPU usage percentage
+
       const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - (stats.precpu_stats.cpu_usage?.total_usage || 0);
       const systemDelta = stats.cpu_stats.system_cpu_usage - (stats.precpu_stats.system_cpu_usage || 0);
       const cpuPercent = systemDelta > 0 ? (cpuDelta / systemDelta) * 100 : 0;
-      
+
       return {
         memory: {
           usage: memoryUsage,
@@ -164,15 +181,16 @@ export class ResourceManager {
     }
   }
 
-  // Check if container is using too many resources
-  async checkResourceViolation(sandboxId, containerId, userTier = 'free') {
+  async checkResourceViolation(
+    _sandboxId: string,
+    containerId: string,
+    _userTier: UserTier = 'free'
+  ): Promise<ViolationResult> {
     const stats = await this.getContainerStats(containerId);
-    if (!stats) return { violation: false };
+    if (!stats) return { violation: false, violations: [] };
 
-    const tierLimits = getResourceLimitsForTier(userTier);
-    const violations = [];
+    const violations: ResourceViolation[] = [];
 
-    // Check memory usage (warn at 90%, kill at 95%)
     if (stats.memory.percent > 95) {
       violations.push({
         type: 'memory',
@@ -187,7 +205,6 @@ export class ResourceManager {
       });
     }
 
-    // Check CPU usage (warn at sustained high usage)
     if (stats.cpu.percent > 90) {
       violations.push({
         type: 'cpu',
@@ -203,39 +220,37 @@ export class ResourceManager {
     };
   }
 
-  // Cleanup expired sandboxes
-  async cleanupExpiredSandboxes() {
+  async cleanupExpiredSandboxes(): Promise<number> {
     try {
       const expiredQuery = `
-        SELECT id, metadata 
-        FROM sandboxes 
-        WHERE status = 'active' 
+        SELECT id, metadata
+        FROM sandboxes
+        WHERE status = 'active'
         AND created_at < NOW() - INTERVAL '${RESOURCE_LIMITS.USER.SANDBOX_LIFETIME_HOURS} hours'
       `;
-      
+
       const expiredSandboxes = await this.pool.query(expiredQuery);
-      
+
       for (const sandbox of expiredSandboxes.rows) {
         try {
-          const metadata = await getSandboxMetadata(sandbox.id);
+          const metadata = await getSandboxMetadata(sandbox.id as string);
           if (metadata && metadata.containerId) {
             const container = this.docker.getContainer(metadata.containerId);
-            await container.stop({ t: 10 }); // 10 second grace period
+            await container.stop({ t: 10 });
             await container.remove();
           }
-          
-          // Update database
+
           await this.pool.query(
             'UPDATE sandboxes SET status = $1, destroyed_at = CURRENT_TIMESTAMP WHERE id = $2',
             ['expired', sandbox.id]
           );
-          
+
           logger.info(`Cleaned up expired sandbox: ${sandbox.id}`);
         } catch (error) {
           logger.error(`Error cleaning up sandbox ${sandbox.id}:`, error);
         }
       }
-      
+
       return expiredSandboxes.rows.length;
     } catch (error) {
       logger.error('Error during cleanup:', error);
@@ -243,16 +258,15 @@ export class ResourceManager {
     }
   }
 
-  // Get system resource usage
-  async getSystemStats() {
+  async getSystemStats(): Promise<SystemStats> {
     try {
       const containers = await this.docker.listContainers({
         filters: { label: ['insien.sandbox.id'] }
       });
-      
+
       let totalMemory = 0;
       let totalCpu = 0;
-      
+
       for (const containerInfo of containers) {
         const stats = await this.getContainerStats(containerInfo.Id);
         if (stats) {
@@ -260,14 +274,14 @@ export class ResourceManager {
           totalCpu += stats.cpu.percent;
         }
       }
-      
+
       this.systemStats = {
         totalContainers: containers.length,
         totalMemoryUsage: totalMemory,
         totalCpuUsage: totalCpu,
         lastUpdated: new Date().toISOString()
       };
-      
+
       return this.systemStats;
     } catch (error) {
       logger.error('Error getting system stats:', error);
@@ -275,18 +289,19 @@ export class ResourceManager {
     }
   }
 
-  // Start resource monitoring
-  startMonitoring() {
-    // Cleanup expired sandboxes every 15 minutes
+  getTierLimits(tier: UserTier): TierLimits {
+    return getTierLimits(tier);
+  }
+
+  startMonitoring(): void {
     setInterval(() => {
-      this.cleanupExpiredSandboxes().catch(error => {
+      this.cleanupExpiredSandboxes().catch((error) => {
         logger.error('Cleanup error:', error);
       });
     }, RESOURCE_LIMITS.SYSTEM.CLEANUP_INTERVAL_MINUTES * 60 * 1000);
 
-    // Update system stats every 5 minutes
     setInterval(() => {
-      this.getSystemStats().catch(error => {
+      this.getSystemStats().catch((error) => {
         logger.error('Stats update error:', error);
       });
     }, 5 * 60 * 1000);
