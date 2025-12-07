@@ -24,6 +24,9 @@ import usersRouter from './routes/users.js';
 import authRouter from './routes/auth.js';
 import createSandboxesRouter from './routes/sandboxes.js';
 import templatesRouter from './routes/templates.js';
+import createSettingsRouter from './routes/settings.js';
+import createImagesRouter from './routes/images.js';
+import createStorageRouter from './routes/storage.js';
 import { logger } from './utils/logger.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { ResourceManager } from './services/resourceManager.js';
@@ -107,6 +110,15 @@ const sandboxesRouter = createSandboxesRouter({
   setPortMapping
 });
 app.use('/sandbox', sandboxesRouter);
+
+const settingsRouter = createSettingsRouter({ agentConnections });
+app.use('/api/settings', settingsRouter);
+
+const imagesRouter = createImagesRouter({ docker });
+app.use('/api/images', imagesRouter);
+
+const storageRouter = createStorageRouter({ docker });
+app.use('/api/storage', storageRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

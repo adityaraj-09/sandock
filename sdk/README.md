@@ -33,7 +33,11 @@ await sandbox.destroy();
 - Package manager integration (npm, pip, cargo, go, composer)
 - Port exposure for running services
 - File system operations
-- Resource isolation and security
+- Secrets management with encryption
+- Environment variable configuration
+- Network policy controls
+- Custom Docker image support
+- Persistent storage volumes
 
 ## Templates
 
@@ -127,6 +131,21 @@ Creates a sandbox from a template with pre-configured files and packages.
 ```typescript
 const result = await sandbox.createFromTemplate('python-flask');
 ```
+
+#### `createForLanguage(language, options?): Promise<CreateResponse>`
+
+Creates a sandbox optimized for a specific programming language.
+
+```typescript
+const result = await sandbox.createForLanguage('python');
+
+const result = await sandbox.createForLanguage('typescript', {
+  env: { NODE_ENV: 'development' },
+  tier: 'pro'
+});
+```
+
+Supported languages: `javascript`, `typescript`, `python`, `java`, `cpp`, `go`, `rust`
 
 #### `destroy(): Promise<{ success: boolean }>`
 
@@ -310,6 +329,216 @@ Gets all exposed ports.
 const { ports } = await sandbox.getExposedPorts();
 ```
 
+### Secrets Management
+
+Store and inject encrypted secrets into sandboxes.
+
+#### `createSecret(name, value): Promise<SecretCreateResult>`
+
+Creates an encrypted secret.
+
+```typescript
+await sandbox.createSecret('DATABASE_URL', 'postgres://...');
+await sandbox.createSecret('API_KEY', 'sk-...');
+```
+
+#### `listSecrets(): Promise<SecretsListResult>`
+
+Lists all secrets (values are not returned).
+
+```typescript
+const { secrets } = await sandbox.listSecrets();
+```
+
+#### `deleteSecret(name): Promise<{ success: boolean }>`
+
+Deletes a secret.
+
+```typescript
+await sandbox.deleteSecret('API_KEY');
+```
+
+#### `injectSecrets(secrets): Promise<{ success: boolean; injected: number }>`
+
+Injects secrets as environment variables into the sandbox.
+
+```typescript
+await sandbox.injectSecrets({
+  DATABASE_URL: 'DATABASE_URL',
+  API_KEY: 'API_KEY'
+});
+```
+
+### Environment Variables
+
+#### `setEnv(env): Promise<EnvSetResult>`
+
+Sets environment variables in the sandbox.
+
+```typescript
+await sandbox.setEnv({
+  NODE_ENV: 'production',
+  PORT: '3000',
+  DEBUG: 'true'
+});
+```
+
+#### `getEnv(fromContainer?): Promise<EnvGetResult>`
+
+Gets environment variables.
+
+```typescript
+const { env } = await sandbox.getEnv();
+
+const { env } = await sandbox.getEnv(true);
+```
+
+#### `deleteEnvKeys(keys): Promise<{ success: boolean; deleted: number }>`
+
+Deletes specific environment variables.
+
+```typescript
+await sandbox.deleteEnvKeys(['DEBUG', 'TEMP_VAR']);
+```
+
+### Network Policies
+
+Control network access for sandboxes.
+
+#### `setNetworkPolicy(policy): Promise<NetworkPolicyResult>`
+
+Sets a custom network policy.
+
+```typescript
+await sandbox.setNetworkPolicy({
+  allowOutbound: true,
+  allowInbound: false,
+  allowedDomains: ['api.github.com', 'registry.npmjs.org'],
+  blockedDomains: ['malware.com'],
+  allowedPorts: [80, 443],
+  maxBandwidthMbps: 10
+});
+```
+
+#### `setNetworkPolicyPreset(preset): Promise<NetworkPolicyResult>`
+
+Applies a preset network policy.
+
+```typescript
+await sandbox.setNetworkPolicyPreset('restricted');
+```
+
+Presets: `default`, `restricted`
+
+#### `getNetworkPolicy(): Promise<NetworkPolicyResult>`
+
+Gets the current network policy.
+
+```typescript
+const { policy } = await sandbox.getNetworkPolicy();
+```
+
+### Custom Images
+
+Use custom Docker images for sandboxes.
+
+#### `listImages(): Promise<ImagesListResult>`
+
+Lists available custom images.
+
+```typescript
+const { userImages, publicImages } = await sandbox.listImages();
+```
+
+#### `validateImage(image): Promise<ImageValidationResult>`
+
+Validates a Docker image.
+
+```typescript
+const result = await sandbox.validateImage('node:18-alpine');
+if (result.valid) {
+  console.log('Image is valid');
+}
+```
+
+#### `registerImage(name, tag, options?): Promise<{ success: boolean; image: CustomImage }>`
+
+Registers a custom image.
+
+```typescript
+await sandbox.registerImage('my-python', '3.11', {
+  description: 'Python with ML libraries',
+  isPublic: false,
+  baseImage: 'python:3.11-slim'
+});
+```
+
+#### `Sandbox.getBuiltinImages(orchestratorUrl?): Promise<{ images: Array<...> }>`
+
+Gets available built-in images.
+
+```typescript
+const { images } = await Sandbox.getBuiltinImages();
+```
+
+### Persistent Storage
+
+Attach persistent volumes to sandboxes.
+
+#### `createVolume(name, options?): Promise<VolumeCreateResult>`
+
+Creates a persistent volume.
+
+```typescript
+const { volume } = await sandbox.createVolume('my-data', {
+  sizeMB: 500,
+  mountPath: '/data'
+});
+```
+
+#### `listVolumes(): Promise<VolumesListResult>`
+
+Lists all volumes.
+
+```typescript
+const { volumes } = await sandbox.listVolumes();
+```
+
+#### `deleteVolume(volumeId): Promise<{ success: boolean }>`
+
+Deletes a volume.
+
+```typescript
+await sandbox.deleteVolume('vol-123');
+```
+
+#### `attachVolume(volumeId, options?): Promise<{ success: boolean; attachment: VolumeAttachment }>`
+
+Attaches a volume to the sandbox.
+
+```typescript
+await sandbox.attachVolume('vol-123', {
+  mountPath: '/data',
+  readOnly: false
+});
+```
+
+#### `detachVolume(volumeId): Promise<{ success: boolean }>`
+
+Detaches a volume from the sandbox.
+
+```typescript
+await sandbox.detachVolume('vol-123');
+```
+
+#### `getSandboxVolumes(): Promise<{ success: boolean; volumes: VolumeAttachment[] }>`
+
+Gets volumes attached to the sandbox.
+
+```typescript
+const { volumes } = await sandbox.getSandboxVolumes();
+```
+
 ### Static Methods
 
 #### `Sandbox.getTemplates(orchestratorUrl?): Promise<{ templates: TemplateInfo[] }>`
@@ -377,7 +606,21 @@ import type {
   PackageInstallOptions,
   PackageInstallResult,
   TemplateInfo,
-  Template
+  Template,
+  Secret,
+  SecretCreateResult,
+  SecretsListResult,
+  EnvSetResult,
+  EnvGetResult,
+  NetworkPolicy,
+  NetworkPolicyResult,
+  CustomImage,
+  ImageValidationResult,
+  ImagesListResult,
+  PersistentVolume,
+  VolumeAttachment,
+  VolumesListResult,
+  VolumeCreateResult
 } from '@insien/sandock';
 ```
 

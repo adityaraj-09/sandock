@@ -95,6 +95,8 @@ export default function createSandboxesRouter(dependencies: SandboxRouterDepende
       const userId = (req as AuthenticatedRequest).user.userId;
       const apiKeyId = (req as AuthenticatedRequest).user.apiKeyId!;
       const userTier = (req.body.tier || (req as AuthenticatedRequest).user.tier || 'free') as UserTier;
+      const language = req.body.language as string | undefined;
+      const customEnv = req.body.env as Record<string, string> | undefined;
 
       logger.debug(`[SANDBOX_CREATE:${sandboxId}] Starting creation for user ${userId}, apiKey ${apiKeyId}, tier ${userTier}`);
 
@@ -123,9 +125,22 @@ export default function createSandboxesRouter(dependencies: SandboxRouterDepende
 
       containerConfig = await containerOptimizer.optimizeContainerStartup(containerConfig);
 
-      const optimizedImage = await containerOptimizer.optimizeAgentImage(AGENT_IMAGE);
-      containerConfig.Image = optimizedImage;
-      logger.info(`[SANDBOX_CREATE:${sandboxId}] Using image: ${optimizedImage}`);
+      let finalImage: string;
+      if (language) {
+        const langImage = getImageForLanguage(language);
+        finalImage = await containerOptimizer.optimizeAgentImage(langImage);
+        logger.info(`[SANDBOX_CREATE:${sandboxId}] Using language image: ${langImage} -> ${finalImage}`);
+      } else {
+        finalImage = await containerOptimizer.optimizeAgentImage(AGENT_IMAGE);
+      }
+      containerConfig.Image = finalImage;
+
+      if (customEnv) {
+        const envEntries = Object.entries(customEnv).map(([k, v]) => `${k}=${v}`);
+        containerConfig.Env = [...(containerConfig.Env || []), ...envEntries];
+      }
+
+      logger.info(`[SANDBOX_CREATE:${sandboxId}] Using image: ${finalImage}`);
 
       const container = await (docker as unknown as Docker).createContainer(containerConfig);
       logger.info(`[SANDBOX_CREATE:${sandboxId}] Container created: ${container.id}`);
@@ -166,7 +181,7 @@ export default function createSandboxesRouter(dependencies: SandboxRouterDepende
           cpu: containerConfig.HostConfig.CpuShares,
           storage: containerConfig.HostConfig.StorageOpt?.size
         },
-        image: optimizedImage,
+        image: finalImage,
         expiresAt: new Date(Date.now() + RESOURCE_LIMITS.USER.SANDBOX_LIFETIME_HOURS * 60 * 60 * 1000).toISOString()
       });
 

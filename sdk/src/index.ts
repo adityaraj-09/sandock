@@ -34,5 +34,20 @@ export type {
   TemplateFile,
   Template,
   CreateFromTemplateOptions,
-  CreateFromTemplateResult
+  CreateFromTemplateResult,
+  Secret,
+  SecretCreateResult,
+  SecretsListResult,
+  EnvSetResult,
+  EnvGetResult,
+  NetworkPolicy,
+  NetworkPolicyResult,
+  CustomImage,
+  ImageValidationResult,
+  ImagesListResult,
+  PersistentVolume,
+  VolumeAttachment,
+  VolumesListResult,
+  VolumeCreateResult,
+  CreateWithOptionsParams
 } from './types.js';

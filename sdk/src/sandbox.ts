@@ -28,7 +28,19 @@ import type {
   PackageManager,
   TemplateInfo,
   Template,
-  CreateFromTemplateResult
+  CreateFromTemplateResult,
+  SecretCreateResult,
+  SecretsListResult,
+  EnvSetResult,
+  EnvGetResult,
+  NetworkPolicy,
+  NetworkPolicyResult,
+  CustomImage,
+  ImageValidationResult,
+  ImagesListResult,
+  VolumeAttachment,
+  VolumesListResult,
+  VolumeCreateResult
 } from './types.js';
 
 export class Sandbox {
@@ -600,9 +612,68 @@ export class Sandbox {
 
     const data = (await response.json()) as CreateFromTemplateResult;
     this.sandboxId = data.sandboxId;
+    await this.waitForAgent(30000);
     await this.connectWebSocket();
 
     return data;
+  }
+
+  async createForLanguage(
+    language: SupportedLanguage,
+    options?: { env?: Record<string, string>; tier?: string }
+  ): Promise<CreateResponse> {
+    if (!this.apiKey) {
+      throw new Error('API key is required');
+    }
+
+    if (this.creating) {
+      while (this.creating) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return { sandboxId: this.sandboxId!, agentUrl: '' };
+    }
+
+    if (this.connected) {
+      return { sandboxId: this.sandboxId!, agentUrl: '' };
+    }
+
+    this.creating = true;
+    try {
+      const response = await fetch(`${this.orchestratorUrl}/sandbox/create`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': this.apiKey
+        },
+        body: JSON.stringify({
+          language,
+          env: options?.env,
+          tier: options?.tier || 'free'
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(
+          (error as { error?: string }).error || `Failed to create sandbox: ${response.statusText}`
+        );
+      }
+
+      const data = (await response.json()) as { sandboxId: string; agentUrl: string };
+      this.sandboxId = data.sandboxId;
+
+      await this.waitForAgent(30000);
+      await this.connectWebSocket();
+
+      this.creating = false;
+      return {
+        sandboxId: this.sandboxId,
+        agentUrl: data.agentUrl
+      };
+    } catch (error) {
+      this.creating = false;
+      throw new Error(`Failed to create sandbox for language: ${(error as Error).message}`);
+    }
   }
 
   async gitClone(options: GitCloneOptions): Promise<GitCloneResult> {
@@ -763,6 +834,426 @@ export class Sandbox {
 
     const data = (await response.json()) as { template: Template };
     return data.template;
+  }
+
+  async createSecret(name: string, value: string): Promise<SecretCreateResult> {
+    if (!this.apiKey) {
+      throw new Error('API key is required');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/api/settings/secrets`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey
+      },
+      body: JSON.stringify({ name, value })
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to create secret: ${response.statusText}`);
+    }
+
+    return (await response.json()) as SecretCreateResult;
+  }
+
+  async listSecrets(): Promise<SecretsListResult> {
+    if (!this.apiKey) {
+      throw new Error('API key is required');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/api/settings/secrets`, {
+      headers: { 'X-API-Key': this.apiKey }
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to list secrets: ${response.statusText}`);
+    }
+
+    return (await response.json()) as SecretsListResult;
+  }
+
+  async deleteSecret(name: string): Promise<{ success: boolean }> {
+    if (!this.apiKey) {
+      throw new Error('API key is required');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/api/settings/secrets/${name}`, {
+      method: 'DELETE',
+      headers: { 'X-API-Key': this.apiKey }
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to delete secret: ${response.statusText}`);
+    }
+
+    return (await response.json()) as { success: boolean };
+  }
+
+  async injectSecrets(secrets: Record<string, string>): Promise<{ success: boolean; injected: number }> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/api/settings/sandbox/${this.sandboxId}/secrets`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey!
+      },
+      body: JSON.stringify({ secrets })
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to inject secrets: ${response.statusText}`);
+    }
+
+    return (await response.json()) as { success: boolean; injected: number };
+  }
+
+  async setEnv(env: Record<string, string>): Promise<EnvSetResult> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/api/settings/sandbox/${this.sandboxId}/env`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey!
+      },
+      body: JSON.stringify({ env })
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to set env: ${response.statusText}`);
+    }
+
+    return (await response.json()) as EnvSetResult;
+  }
+
+  async getEnv(fromContainer?: boolean): Promise<EnvGetResult> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const params = fromContainer ? '?source=container' : '';
+    const response = await fetch(
+      `${this.orchestratorUrl}/api/settings/sandbox/${this.sandboxId}/env${params}`,
+      { headers: { 'X-API-Key': this.apiKey! } }
+    );
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to get env: ${response.statusText}`);
+    }
+
+    return (await response.json()) as EnvGetResult;
+  }
+
+  async deleteEnvKeys(keys: string[]): Promise<{ success: boolean; deleted: number }> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/api/settings/sandbox/${this.sandboxId}/env`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey!
+      },
+      body: JSON.stringify({ keys })
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to delete env keys: ${response.statusText}`);
+    }
+
+    return (await response.json()) as { success: boolean; deleted: number };
+  }
+
+  async setNetworkPolicy(policy: Partial<NetworkPolicy>): Promise<NetworkPolicyResult> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const response = await fetch(
+      `${this.orchestratorUrl}/api/settings/sandbox/${this.sandboxId}/network-policy`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': this.apiKey!
+        },
+        body: JSON.stringify({ policy })
+      }
+    );
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to set network policy: ${response.statusText}`);
+    }
+
+    return (await response.json()) as NetworkPolicyResult;
+  }
+
+  async setNetworkPolicyPreset(preset: 'default' | 'restricted'): Promise<NetworkPolicyResult> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const response = await fetch(
+      `${this.orchestratorUrl}/api/settings/sandbox/${this.sandboxId}/network-policy`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': this.apiKey!
+        },
+        body: JSON.stringify({ preset })
+      }
+    );
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to set network policy: ${response.statusText}`);
+    }
+
+    return (await response.json()) as NetworkPolicyResult;
+  }
+
+  async getNetworkPolicy(): Promise<NetworkPolicyResult> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const response = await fetch(
+      `${this.orchestratorUrl}/api/settings/sandbox/${this.sandboxId}/network-policy`,
+      { headers: { 'X-API-Key': this.apiKey! } }
+    );
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to get network policy: ${response.statusText}`);
+    }
+
+    return (await response.json()) as NetworkPolicyResult;
+  }
+
+  async listImages(): Promise<ImagesListResult> {
+    if (!this.apiKey) {
+      throw new Error('API key is required');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/api/images`, {
+      headers: { 'X-API-Key': this.apiKey }
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to list images: ${response.statusText}`);
+    }
+
+    return (await response.json()) as ImagesListResult;
+  }
+
+  async validateImage(image: string): Promise<ImageValidationResult> {
+    if (!this.apiKey) {
+      throw new Error('API key is required');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/api/images/validate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey
+      },
+      body: JSON.stringify({ image })
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to validate image: ${response.statusText}`);
+    }
+
+    return (await response.json()) as ImageValidationResult;
+  }
+
+  async registerImage(
+    name: string,
+    tag: string,
+    options?: { description?: string; isPublic?: boolean; baseImage?: string }
+  ): Promise<{ success: boolean; image: CustomImage; warnings: string[] }> {
+    if (!this.apiKey) {
+      throw new Error('API key is required');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/api/images/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey
+      },
+      body: JSON.stringify({ name, tag, ...options })
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to register image: ${response.statusText}`);
+    }
+
+    return (await response.json()) as { success: boolean; image: CustomImage; warnings: string[] };
+  }
+
+  async createVolume(
+    name: string,
+    options?: { sizeMB?: number; mountPath?: string }
+  ): Promise<VolumeCreateResult> {
+    if (!this.apiKey) {
+      throw new Error('API key is required');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/api/storage/volumes`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey
+      },
+      body: JSON.stringify({ name, ...options })
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to create volume: ${response.statusText}`);
+    }
+
+    return (await response.json()) as VolumeCreateResult;
+  }
+
+  async listVolumes(): Promise<VolumesListResult> {
+    if (!this.apiKey) {
+      throw new Error('API key is required');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/api/storage/volumes`, {
+      headers: { 'X-API-Key': this.apiKey }
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to list volumes: ${response.statusText}`);
+    }
+
+    return (await response.json()) as VolumesListResult;
+  }
+
+  async deleteVolume(volumeId: string): Promise<{ success: boolean }> {
+    if (!this.apiKey) {
+      throw new Error('API key is required');
+    }
+
+    const response = await fetch(`${this.orchestratorUrl}/api/storage/volumes/${volumeId}`, {
+      method: 'DELETE',
+      headers: { 'X-API-Key': this.apiKey }
+    });
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to delete volume: ${response.statusText}`);
+    }
+
+    return (await response.json()) as { success: boolean };
+  }
+
+  async attachVolume(
+    volumeId: string,
+    options?: { mountPath?: string; readOnly?: boolean }
+  ): Promise<{ success: boolean; attachment: VolumeAttachment }> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const response = await fetch(
+      `${this.orchestratorUrl}/api/storage/sandbox/${this.sandboxId}/volumes/${volumeId}/attach`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': this.apiKey!
+        },
+        body: JSON.stringify(options || {})
+      }
+    );
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to attach volume: ${response.statusText}`);
+    }
+
+    return (await response.json()) as { success: boolean; attachment: VolumeAttachment };
+  }
+
+  async detachVolume(volumeId: string): Promise<{ success: boolean }> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const response = await fetch(
+      `${this.orchestratorUrl}/api/storage/sandbox/${this.sandboxId}/volumes/${volumeId}/detach`,
+      {
+        method: 'POST',
+        headers: { 'X-API-Key': this.apiKey! }
+      }
+    );
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to detach volume: ${response.statusText}`);
+    }
+
+    return (await response.json()) as { success: boolean };
+  }
+
+  async getSandboxVolumes(): Promise<{ success: boolean; volumes: VolumeAttachment[] }> {
+    if (!this.sandboxId) {
+      throw new Error('Sandbox not created. Call create() first.');
+    }
+
+    const response = await fetch(
+      `${this.orchestratorUrl}/api/storage/sandbox/${this.sandboxId}/volumes`,
+      { headers: { 'X-API-Key': this.apiKey! } }
+    );
+
+    if (!response.ok) {
+      const error = (await response.json()) as { error?: string };
+      throw new Error(error.error || `Failed to get sandbox volumes: ${response.statusText}`);
+    }
+
+    return (await response.json()) as { success: boolean; volumes: VolumeAttachment[] };
+  }
+
+  static async getBuiltinImages(orchestratorUrl?: string): Promise<{
+    success: boolean;
+    images: Array<{ name: string; language: string; description: string }>;
+  }> {
+    const url = orchestratorUrl || process.env.INSIEN_API_URL || 'http://localhost:3000';
+
+    const response = await fetch(`${url}/api/images/builtin`);
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch builtin images: ${response.statusText}`);
+    }
+
+    return (await response.json()) as {
+      success: boolean;
+      images: Array<{ name: string; language: string; description: string }>;
+    };
   }
 
   static getSupportedLanguages(): SupportedLanguage[] {

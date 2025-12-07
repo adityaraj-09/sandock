@@ -205,3 +205,109 @@ export interface CreateFromTemplateResult {
   tier: string;
   expiresAt: string;
 }
+
+export interface Secret {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SecretCreateResult {
+  success: boolean;
+  secret: { id: string; name: string };
+}
+
+export interface SecretsListResult {
+  success: boolean;
+  secrets: Secret[];
+}
+
+export interface EnvSetResult {
+  success: boolean;
+  stored?: boolean;
+  applied?: boolean;
+  error?: string;
+}
+
+export interface EnvGetResult {
+  success: boolean;
+  env?: Record<string, string>;
+  error?: string;
+}
+
+export interface NetworkPolicy {
+  allowedDomains: string[];
+  blockedDomains: string[];
+  allowOutbound: boolean;
+  allowInbound: boolean;
+  maxBandwidthMbps?: number;
+  allowedPorts?: number[];
+  blockedPorts?: number[];
+}
+
+export interface NetworkPolicyResult {
+  success: boolean;
+  policy?: NetworkPolicy;
+  error?: string;
+}
+
+export interface CustomImage {
+  id: string;
+  name: string;
+  tag: string;
+  fullName: string;
+  description?: string;
+  isPublic: boolean;
+  baseImage: string;
+  createdAt: string;
+}
+
+export interface ImageValidationResult {
+  valid: boolean;
+  error?: string;
+  warnings: string[];
+}
+
+export interface ImagesListResult {
+  success: boolean;
+  userImages: CustomImage[];
+  publicImages: CustomImage[];
+}
+
+export interface PersistentVolume {
+  id: string;
+  name: string;
+  volumeName: string;
+  sizeMB: number;
+  mountPath: string;
+  createdAt: string;
+  lastUsedAt?: string;
+}
+
+export interface VolumeAttachment {
+  volumeId: string;
+  sandboxId: string;
+  mountPath: string;
+  readOnly: boolean;
+  attachedAt: string;
+}
+
+export interface VolumesListResult {
+  success: boolean;
+  volumes: PersistentVolume[];
+}
+
+export interface VolumeCreateResult {
+  success: boolean;
+  volume: PersistentVolume;
+}
+
+export interface CreateWithOptionsParams {
+  image?: string;
+  env?: Record<string, string>;
+  volumes?: Array<{ volumeId: string; mountPath?: string; readOnly?: boolean }>;
+  networkPolicy?: Partial<NetworkPolicy>;
+  secrets?: Record<string, string>;
+  tier?: string;
+}
