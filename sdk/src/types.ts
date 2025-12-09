@@ -311,3 +311,82 @@ export interface CreateWithOptionsParams {
   secrets?: Record<string, string>;
   tier?: string;
 }
+
+export type JudgeLanguage = 'c' | 'cpp' | 'python' | 'java' | 'go' | 'rust' | 'javascript';
+
+export type JudgeStatus =
+  | 'PENDING'
+  | 'PROCESSING'
+  | 'OK'
+  | 'COMPILATION_ERROR'
+  | 'RUNTIME_ERROR'
+  | 'TIME_LIMIT_EXCEEDED'
+  | 'MEMORY_LIMIT_EXCEEDED'
+  | 'INTERNAL_ERROR';
+
+export interface JudgeExecuteOptions {
+  source_code: string;
+  language: JudgeLanguage;
+  stdin?: string;
+  time_limit?: number;
+  memory_limit?: number;
+  wall_time_limit?: number;
+  max_processes?: number;
+  max_file_size?: number;
+}
+
+export interface JudgeSubmitResult {
+  id: string;
+  status: 'PENDING';
+}
+
+export interface JudgeSubmission {
+  id: string;
+  user_id?: string;
+  language: JudgeLanguage;
+  source_code: string;
+  stdin?: string;
+  status: JudgeStatus;
+  stdout?: string;
+  stderr?: string;
+  exit_code?: number;
+  time_used?: number;
+  wall_time_used?: number;
+  memory_used?: number;
+  time_limit?: number;
+  memory_limit?: number;
+  signal?: number;
+  message?: string;
+  created_at: string;
+}
+
+export interface JudgeSubmissionsListResult {
+  submissions: JudgeSubmission[];
+  limit: number;
+  offset: number;
+}
+
+export interface JudgeStatusResult {
+  workers: {
+    total: number;
+    busy: number;
+    idle: number;
+    queueSize: number;
+  };
+  config: {
+    workerCount: number;
+    maxQueueSize: number;
+    maxTimeLimit: number;
+    maxMemoryLimit: number;
+  };
+}
+
+export interface JudgeLanguagesResult {
+  languages: JudgeLanguage[];
+  limits: {
+    max_time_limit: number;
+    max_memory_limit: number;
+    max_source_size: number;
+    max_stdin_size: number;
+  };
+}

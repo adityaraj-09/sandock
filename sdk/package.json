@@ -1,6 +1,6 @@
 {
   "name": "@insien/sandock",
-  "version": "0.3.0",
+  "version": "1.1.0",
   "description": "SDK for Insien Sandbox - Execute code in isolated sandbox environments",
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",

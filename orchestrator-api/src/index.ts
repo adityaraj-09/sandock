@@ -27,7 +27,9 @@ import templatesRouter from './routes/templates.js';
 import createSettingsRouter from './routes/settings.js';
 import createImagesRouter from './routes/images.js';
 import createStorageRouter from './routes/storage.js';
+import judgeRouter from './routes/judge.js';
 import { logger } from './utils/logger.js';
+import { getJudgeService, shutdownJudgeService } from './services/judge/index.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { ResourceManager } from './services/resourceManager.js';
 import { ContainerOptimizer } from './services/containerOptimizer.js';
@@ -119,6 +121,8 @@ app.use('/api/images', imagesRouter);
 
 const storageRouter = createStorageRouter({ docker });
 app.use('/api/storage', storageRouter);
+
+app.use('/api/judge', judgeRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
@@ -289,6 +293,10 @@ async function startServer(): Promise<void> {
     logger.info('Resource management services started');
     console.log('✓ Resource management services started');
 
+    console.log('Initializing judge service...');
+    getJudgeService();
+    console.log('✓ Judge service initialized');
+
     console.log('\n=== SERVER STARTING ===');
     app.listen(PORT, () => {
       logger.info(`Orchestrator API listening on http://localhost:${PORT}`);
@@ -332,6 +340,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
     await containerPool.shutdown();
     logger.info('Container pool shutdown');
+
+    shutdownJudgeService();
+    logger.info('Judge service shutdown');
 
     if (redisClient.isReady) {
       await redisClient.quit();

@@ -330,6 +330,86 @@
 			"description": "API key management endpoints (requires JWT authentication)"
 		},
 		{
+			"name": "Templates",
+			"item": [
+				{
+					"name": "List All Templates",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/templates",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"templates"
+							]
+						},
+						"description": "Get all available sandbox templates"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Template by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/templates/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"templates",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "node-express",
+									"description": "Template ID (e.g., node-express, python-flask)"
+								}
+							]
+						},
+						"description": "Get detailed information about a specific template"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Templates by Language",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/templates/language/:language",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"templates",
+								"language",
+								":language"
+							],
+							"variable": [
+								{
+									"key": "language",
+									"value": "python",
+									"description": "Language (javascript, python, typescript, go, rust)"
+								}
+							]
+						},
+						"description": "Get all templates for a specific programming language"
+					},
+					"response": []
+				}
+			],
+			"description": "Sandbox templates (public endpoints)"
+		},
+		{
 			"name": "Sandboxes",
 			"item": [
 				{
@@ -365,7 +445,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"tier\": \"free\"\n}",
+							"raw": "{\n  \"tier\": \"free\",\n  \"language\": \"python\",\n  \"env\": {\n    \"MY_VAR\": \"value\"\n  }\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -382,7 +462,61 @@
 								"create"
 							]
 						},
-						"description": "Create a new sandbox. Automatically saves sandbox ID to environment."
+						"description": "Create a new sandbox. Optionally specify language (javascript, python, typescript, java, cpp, go, rust) and environment variables."
+					},
+					"response": []
+				},
+				{
+					"name": "Create Sandbox from Template",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    if (jsonData.sandboxId) {",
+									"        pm.environment.set(\"sandbox_id\", jsonData.sandboxId);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"templateId\": \"node-express\",\n  \"tier\": \"free\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/sandbox/create-from-template",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								"create-from-template"
+							]
+						},
+						"description": "Create a sandbox from a pre-configured template with files and packages"
 					},
 					"response": []
 				},
@@ -646,6 +780,1147 @@
 			"description": "Sandbox management endpoints (requires API key authentication)"
 		},
 		{
+			"name": "Git Operations",
+			"item": [
+				{
+					"name": "Clone Repository",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"url\": \"https://github.com/user/repo.git\",\n  \"branch\": \"main\",\n  \"depth\": 1,\n  \"directory\": \"/app/project\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/sandbox/:id/git/clone",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								":id",
+								"git",
+								"clone"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Clone a git repository into the sandbox"
+					},
+					"response": []
+				},
+				{
+					"name": "Pull Repository",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"directory\": \"/app\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/sandbox/:id/git/pull",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								":id",
+								"git",
+								"pull"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Pull latest changes from remote repository"
+					},
+					"response": []
+				},
+				{
+					"name": "Checkout Branch",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"branch\": \"develop\",\n  \"directory\": \"/app\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/sandbox/:id/git/checkout",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								":id",
+								"git",
+								"checkout"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Checkout a specific branch"
+					},
+					"response": []
+				}
+			],
+			"description": "Git operations within sandboxes (requires API key authentication)"
+		},
+		{
+			"name": "Package Management",
+			"item": [
+				{
+					"name": "Install Packages",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"packages\": [\"express\", \"cors\", \"dotenv\"],\n  \"manager\": \"npm\",\n  \"dev\": false,\n  \"directory\": \"/app\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/sandbox/:id/packages/install",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								":id",
+								"packages",
+								"install"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Install packages using npm, pip, cargo, go, or composer"
+					},
+					"response": []
+				},
+				{
+					"name": "Uninstall Packages",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"packages\": [\"lodash\"],\n  \"manager\": \"npm\",\n  \"directory\": \"/app\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/sandbox/:id/packages/uninstall",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								":id",
+								"packages",
+								"uninstall"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Uninstall packages from sandbox"
+					},
+					"response": []
+				},
+				{
+					"name": "List Installed Packages",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/sandbox/:id/packages?manager=npm&directory=/app",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"sandbox",
+								":id",
+								"packages"
+							],
+							"query": [
+								{
+									"key": "manager",
+									"value": "npm",
+									"description": "Package manager (npm, pip, cargo, go, composer)"
+								},
+								{
+									"key": "directory",
+									"value": "/app",
+									"description": "Working directory"
+								}
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "List all installed packages in sandbox"
+					},
+					"response": []
+				}
+			],
+			"description": "Package manager operations (requires API key authentication)"
+		},
+		{
+			"name": "Secrets",
+			"item": [
+				{
+					"name": "Create Secret",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"DATABASE_URL\",\n  \"value\": \"postgres://user:pass@localhost:5432/db\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/settings/secrets",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"settings",
+								"secrets"
+							]
+						},
+						"description": "Create an encrypted secret for the user"
+					},
+					"response": []
+				},
+				{
+					"name": "List Secrets",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/settings/secrets",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"settings",
+								"secrets"
+							]
+						},
+						"description": "List all secrets (values are not returned)"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Secret",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/settings/secrets/:name",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"settings",
+								"secrets",
+								":name"
+							],
+							"variable": [
+								{
+									"key": "name",
+									"value": "DATABASE_URL",
+									"description": "Secret name"
+								}
+							]
+						},
+						"description": "Delete a secret by name"
+					},
+					"response": []
+				},
+				{
+					"name": "Inject Secrets to Sandbox",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"secrets\": {\n    \"DB_URL\": \"DATABASE_URL\",\n    \"API_KEY\": \"MY_API_KEY\"\n  }\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/settings/sandbox/:id/secrets",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"settings",
+								"sandbox",
+								":id",
+								"secrets"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Inject secrets as environment variables into a sandbox"
+					},
+					"response": []
+				}
+			],
+			"description": "Secret management (requires API key authentication)"
+		},
+		{
+			"name": "Environment Variables",
+			"item": [
+				{
+					"name": "Set Environment Variables",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"env\": {\n    \"NODE_ENV\": \"production\",\n    \"PORT\": \"3000\",\n    \"DEBUG\": \"true\"\n  }\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/settings/sandbox/:id/env",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"settings",
+								"sandbox",
+								":id",
+								"env"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Set environment variables for a sandbox"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Environment Variables",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/settings/sandbox/:id/env?source=container",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"settings",
+								"sandbox",
+								":id",
+								"env"
+							],
+							"query": [
+								{
+									"key": "source",
+									"value": "container",
+									"description": "Get from container (optional)"
+								}
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Get environment variables for a sandbox"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Environment Variables",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"keys\": [\"DEBUG\", \"TEMP_VAR\"]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/settings/sandbox/:id/env",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"settings",
+								"sandbox",
+								":id",
+								"env"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Delete specific environment variables"
+					},
+					"response": []
+				}
+			],
+			"description": "Environment variable management (requires API key authentication)"
+		},
+		{
+			"name": "Network Policies",
+			"item": [
+				{
+					"name": "Set Network Policy",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"policy\": {\n    \"allowOutbound\": true,\n    \"allowInbound\": false,\n    \"allowedDomains\": [\"api.github.com\", \"registry.npmjs.org\"],\n    \"blockedDomains\": [\"malware.com\"],\n    \"allowedPorts\": [80, 443],\n    \"maxBandwidthMbps\": 10\n  }\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/settings/sandbox/:id/network-policy",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"settings",
+								"sandbox",
+								":id",
+								"network-policy"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Set custom network policy for a sandbox"
+					},
+					"response": []
+				},
+				{
+					"name": "Set Network Policy Preset",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"preset\": \"restricted\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/settings/sandbox/:id/network-policy",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"settings",
+								"sandbox",
+								":id",
+								"network-policy"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Apply a preset network policy (default or restricted)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Network Policy",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/settings/sandbox/:id/network-policy",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"settings",
+								"sandbox",
+								":id",
+								"network-policy"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Get current network policy for a sandbox"
+					},
+					"response": []
+				}
+			],
+			"description": "Network policy management (requires API key authentication)"
+		},
+		{
+			"name": "Custom Images",
+			"item": [
+				{
+					"name": "List Images",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/images",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"images"
+							]
+						},
+						"description": "List all available custom images (user's and public)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Builtin Images",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/images/builtin",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"images",
+								"builtin"
+							]
+						},
+						"description": "List all built-in sandbox agent images"
+					},
+					"response": []
+				},
+				{
+					"name": "Validate Image",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"image\": \"node:18-alpine\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/images/validate",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"images",
+								"validate"
+							]
+						},
+						"description": "Validate a Docker image"
+					},
+					"response": []
+				},
+				{
+					"name": "Register Custom Image",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"my-python\",\n  \"tag\": \"3.11-ml\",\n  \"description\": \"Python with ML libraries\",\n  \"isPublic\": false,\n  \"baseImage\": \"sandbox-agent:python\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/images/register",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"images",
+								"register"
+							]
+						},
+						"description": "Register a custom Docker image (must be built FROM sandbox-agent base)"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Custom Image",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/images/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"images",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "image-uuid-here",
+									"description": "Image ID"
+								}
+							]
+						},
+						"description": "Delete a custom image"
+					},
+					"response": []
+				}
+			],
+			"description": "Custom Docker image management (requires API key authentication)"
+		},
+		{
+			"name": "Persistent Storage",
+			"item": [
+				{
+					"name": "Create Volume",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200 || pm.response.code === 201) {",
+									"    var jsonData = pm.response.json();",
+									"    if (jsonData.volume && jsonData.volume.id) {",
+									"        pm.environment.set(\"volume_id\", jsonData.volume.id);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"my-data\",\n  \"sizeMB\": 500,\n  \"mountPath\": \"/data\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/storage/volumes",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"storage",
+								"volumes"
+							]
+						},
+						"description": "Create a persistent volume"
+					},
+					"response": []
+				},
+				{
+					"name": "List Volumes",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/storage/volumes",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"storage",
+								"volumes"
+							]
+						},
+						"description": "List all persistent volumes"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Volume",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/storage/volumes/:id",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"storage",
+								"volumes",
+								":id"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{volume_id}}",
+									"description": "Volume ID"
+								}
+							]
+						},
+						"description": "Delete a persistent volume"
+					},
+					"response": []
+				},
+				{
+					"name": "Attach Volume to Sandbox",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"mountPath\": \"/data\",\n  \"readOnly\": false\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/storage/sandbox/:sandboxId/volumes/:volumeId/attach",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"storage",
+								"sandbox",
+								":sandboxId",
+								"volumes",
+								":volumeId",
+								"attach"
+							],
+							"variable": [
+								{
+									"key": "sandboxId",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								},
+								{
+									"key": "volumeId",
+									"value": "{{volume_id}}",
+									"description": "Volume ID"
+								}
+							]
+						},
+						"description": "Attach a volume to a sandbox"
+					},
+					"response": []
+				},
+				{
+					"name": "Detach Volume from Sandbox",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/storage/sandbox/:sandboxId/volumes/:volumeId/detach",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"storage",
+								"sandbox",
+								":sandboxId",
+								"volumes",
+								":volumeId",
+								"detach"
+							],
+							"variable": [
+								{
+									"key": "sandboxId",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								},
+								{
+									"key": "volumeId",
+									"value": "{{volume_id}}",
+									"description": "Volume ID"
+								}
+							]
+						},
+						"description": "Detach a volume from a sandbox"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Sandbox Volumes",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/storage/sandbox/:id/volumes",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"storage",
+								"sandbox",
+								":id",
+								"volumes"
+							],
+							"variable": [
+								{
+									"key": "id",
+									"value": "{{sandbox_id}}",
+									"description": "Sandbox ID"
+								}
+							]
+						},
+						"description": "Get all volumes attached to a sandbox"
+					},
+					"response": []
+				}
+			],
+			"description": "Persistent storage management (requires API key authentication)"
+		},
+		{
 			"name": "Health",
 			"item": [
 				{
@@ -710,7 +1985,11 @@
 			"key": "sandbox_id",
 			"value": "",
 			"type": "string"
+		},
+		{
+			"key": "volume_id",
+			"value": "",
+			"type": "string"
 		}
 	]
 }
-

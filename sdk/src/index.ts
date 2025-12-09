@@ -1,4 +1,5 @@
 export { Sandbox } from './sandbox.js';
+export { Judge } from './judge.js';
 export {
   SUPPORTED_LANGUAGES,
   getLanguageConfig,
@@ -49,5 +50,13 @@ export type {
   VolumeAttachment,
   VolumesListResult,
   VolumeCreateResult,
-  CreateWithOptionsParams
+  CreateWithOptionsParams,
+  JudgeLanguage,
+  JudgeStatus,
+  JudgeExecuteOptions,
+  JudgeSubmitResult,
+  JudgeSubmission,
+  JudgeSubmissionsListResult,
+  JudgeStatusResult,
+  JudgeLanguagesResult
 } from './types.js';

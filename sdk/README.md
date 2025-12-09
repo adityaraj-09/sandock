@@ -38,6 +38,7 @@ await sandbox.destroy();
 - Network policy controls
 - Custom Docker image support
 - Persistent storage volumes
+- **Judge** - Competitive programming code execution with precise resource limits
 
 ## Templates
 
@@ -593,6 +594,126 @@ try {
 | `INSIEN_API_URL` | Orchestrator URL |
 | `INSIEN_WS_URL` | WebSocket URL |
 
+## Judge (Competitive Programming)
+
+Execute code with precise resource limits using isolate sandbox. Ideal for competitive programming, online judges, and code evaluation systems.
+
+```typescript
+import { Judge } from '@insien/sandock';
+
+const judge = new Judge({
+  apiKey: 'your-api-key',
+  orchestratorUrl: 'http://localhost:3000'
+});
+
+// Submit code for execution (returns immediately)
+const { id, status } = await judge.execute({
+  source_code: '#include <iostream>\nint main() { std::cout << "Hello"; }',
+  language: 'cpp',
+  stdin: '',
+  time_limit: 2,
+  memory_limit: 256
+});
+
+// Poll for result
+const result = await judge.waitForResult(id);
+console.log(result.stdout);    // "Hello"
+console.log(result.time_used); // 0.015
+
+// Or use executeAndWait for convenience
+const result = await judge.executeAndWait({
+  source_code: 'print(input())',
+  language: 'python',
+  stdin: 'Hello World',
+  time_limit: 2
+});
+```
+
+### Judge Methods
+
+#### `judge.execute(options): Promise<JudgeSubmitResult>`
+
+Submit code for execution. Returns immediately with submission ID.
+
+```typescript
+interface JudgeExecuteOptions {
+  source_code: string;
+  language: 'c' | 'cpp' | 'python' | 'java' | 'go' | 'rust' | 'javascript';
+  stdin?: string;
+  time_limit?: number;      // seconds (default: 2, max: 30)
+  memory_limit?: number;    // MB (default: 256, max: 1024)
+  wall_time_limit?: number; // seconds
+  max_processes?: number;   // (default: 1)
+}
+
+const { id, status } = await judge.execute(options);
+// { id: 'uuid', status: 'PENDING' }
+```
+
+#### `judge.getSubmission(id): Promise<JudgeSubmission>`
+
+Get submission result by ID.
+
+```typescript
+interface JudgeSubmission {
+  id: string;
+  status: 'PENDING' | 'PROCESSING' | 'OK' | 'COMPILATION_ERROR' |
+          'RUNTIME_ERROR' | 'TIME_LIMIT_EXCEEDED' | 'MEMORY_LIMIT_EXCEEDED' |
+          'INTERNAL_ERROR';
+  stdout?: string;
+  stderr?: string;
+  exit_code?: number;
+  time_used?: number;      // seconds
+  wall_time_used?: number; // seconds
+  memory_used?: number;    // KB
+  signal?: number;
+  message?: string;
+}
+
+const submission = await judge.getSubmission('uuid');
+```
+
+#### `judge.waitForResult(id, options?): Promise<JudgeSubmission>`
+
+Poll until submission completes.
+
+```typescript
+const result = await judge.waitForResult('uuid', {
+  pollInterval: 500,  // ms (default: 500)
+  timeout: 60000      // ms (default: 60000)
+});
+```
+
+#### `judge.executeAndWait(options, waitOptions?): Promise<JudgeSubmission>`
+
+Submit and wait for result in one call.
+
+```typescript
+const result = await judge.executeAndWait({
+  source_code: 'console.log("Hello")',
+  language: 'javascript',
+  time_limit: 2
+});
+```
+
+#### `judge.getSubmissions(limit?, offset?): Promise<JudgeSubmissionsListResult>`
+
+List your submissions.
+
+```typescript
+const { submissions, limit, offset } = await judge.getSubmissions(50, 0);
+```
+
+#### `Judge.getLanguages(): Promise<JudgeLanguagesResult>`
+
+Get supported languages and limits (static method).
+
+```typescript
+const { languages, limits } = await Judge.getLanguages();
+// languages: ['c', 'cpp', 'python', 'java', 'go', 'rust', 'javascript']
+// limits: { max_time_limit: 30, max_memory_limit: 1024, ... }
+```
+
 ## TypeScript Support
 
 ```typescript
@@ -620,7 +741,16 @@ import type {
   PersistentVolume,
   VolumeAttachment,
   VolumesListResult,
-  VolumeCreateResult
+  VolumeCreateResult,
+  // Judge types
+  JudgeLanguage,
+  JudgeStatus,
+  JudgeExecuteOptions,
+  JudgeSubmitResult,
+  JudgeSubmission,
+  JudgeSubmissionsListResult,
+  JudgeStatusResult,
+  JudgeLanguagesResult
 } from '@insien/sandock';
 ```
 
