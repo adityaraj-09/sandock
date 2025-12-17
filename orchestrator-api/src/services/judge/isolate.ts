@@ -13,7 +13,7 @@ const BOX_ROOT = '/var/local/lib/isolate';
 
 export async function initBox(boxId: number): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(ISOLATE_PATH, ['--box-id=' + boxId, '--init'], {
+    const proc = spawn(ISOLATE_PATH, ['--box-id=' + boxId, '--cg', '--init'], {
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -37,7 +37,7 @@ export async function initBox(boxId: number): Promise<string> {
 
 export async function cleanupBox(boxId: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(ISOLATE_PATH, ['--box-id=' + boxId, '--cleanup'], {
+    const proc = spawn(ISOLATE_PATH, ['--box-id=' + boxId, '--cg', '--cleanup'], {
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -67,7 +67,16 @@ export async function runIsolate(
     '--fsize=' + options.maxFileSize,
     '--meta=' + metaFile,
     '--cg',
-    '--cg-mem=' + options.memoryLimit
+    '--cg-mem=' + options.memoryLimit,
+    // Mount system directories for compilers and runtime
+    '--dir=/etc:noexec',
+    '--dir=/usr',
+    '--dir=/lib',
+    '--dir=/lib64:maybe',
+    '--dir=/bin',
+    '--dir=/proc=proc:fs',
+    '--env=PATH=/usr/local/bin:/usr/bin:/bin',
+    '--env=HOME=/box'
   ];
 
   if (options.stdinFile) {
@@ -102,6 +111,10 @@ export async function runIsolate(
       try {
         const meta = await parseMetaFile(metaFile);
         const result = buildResult(exitCode || 0, meta);
+        // Include isolate stderr in message if present
+        if (stderr && !result.message) {
+          result.message = stderr;
+        }
         resolve(result);
       } catch (err) {
         resolve({

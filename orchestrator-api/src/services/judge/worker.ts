@@ -139,6 +139,11 @@ export class Worker {
         stderr = await fs.readFile(errorFile, 'utf-8');
       } catch {}
 
+      // Include isolate message in stderr if no compile error was captured
+      if (!stderr && result.message) {
+        stderr = result.message;
+      }
+
       return {
         status: 'COMPILATION_ERROR',
         stdout: '',
@@ -147,7 +152,7 @@ export class Worker {
         time_used: result.time,
         wall_time_used: result.wallTime,
         memory_used: result.memory,
-        message: result.message || 'Compilation failed'
+        message: result.message || stderr || 'Compilation failed'
       };
     }
 

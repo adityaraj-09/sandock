@@ -9,7 +9,7 @@ export const LANGUAGES: Record<Language, LanguageConfig> = {
   c: {
     extension: '.c',
     compiled: true,
-    compileCmd: ['gcc', '-O2', '-std=c17', '-o', 'main', 'source.c', '-lm'],
+    compileCmd: ['/usr/bin/gcc', '-O2', '-std=c17', '-o', 'main', 'source.c', '-lm'],
     runCmd: ['./main'],
     sourceFile: 'source.c',
     binaryFile: 'main'
@@ -17,7 +17,7 @@ export const LANGUAGES: Record<Language, LanguageConfig> = {
   cpp: {
     extension: '.cpp',
     compiled: true,
-    compileCmd: ['g++', '-O2', '-std=c++17', '-o', 'main', 'source.cpp'],
+    compileCmd: ['/usr/bin/g++', '-O2', '-std=c++17', '-o', 'main', 'source.cpp'],
     runCmd: ['./main'],
     sourceFile: 'source.cpp',
     binaryFile: 'main'
@@ -25,21 +25,21 @@ export const LANGUAGES: Record<Language, LanguageConfig> = {
   python: {
     extension: '.py',
     compiled: false,
-    runCmd: ['python3', 'source.py'],
+    runCmd: ['/usr/bin/python3', 'source.py'],
     sourceFile: 'source.py'
   },
   java: {
     extension: '.java',
     compiled: true,
-    compileCmd: ['javac', 'Main.java'],
-    runCmd: ['java', 'Main'],
+    compileCmd: ['/usr/bin/javac', 'Main.java'],
+    runCmd: ['/usr/bin/java', 'Main'],
     sourceFile: 'Main.java',
     binaryFile: 'Main.class'
   },
   go: {
     extension: '.go',
     compiled: true,
-    compileCmd: ['go', 'build', '-o', 'main', 'source.go'],
+    compileCmd: ['/usr/bin/go', 'build', '-o', 'main', 'source.go'],
     runCmd: ['./main'],
     sourceFile: 'source.go',
     binaryFile: 'main'
@@ -47,7 +47,7 @@ export const LANGUAGES: Record<Language, LanguageConfig> = {
   rust: {
     extension: '.rs',
     compiled: true,
-    compileCmd: ['rustc', '-O', '-o', 'main', 'source.rs'],
+    compileCmd: ['/usr/bin/rustc', '-O', '-o', 'main', 'source.rs'],
     runCmd: ['./main'],
     sourceFile: 'source.rs',
     binaryFile: 'main'
@@ -55,7 +55,7 @@ export const LANGUAGES: Record<Language, LanguageConfig> = {
   javascript: {
     extension: '.js',
     compiled: false,
-    runCmd: ['node', 'source.js'],
+    runCmd: ['/usr/bin/node', 'source.js'],
     sourceFile: 'source.js'
   }
 };
